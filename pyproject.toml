@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpl-rl"
+version = "0.1.0"
+description = "Reinforcement learning environment for Fantasy Premier League"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium>=0.29",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "sb3-contrib>=2.2",
+    "stable-baselines3>=2.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
