@@ -88,3 +88,11 @@ SEASON_FILES = [
     "player_idlist.csv",
     "cleaned_players.csv",
 ]
+
+# Required files — download_season fails only if these are missing.
+# teams.csv and fixtures.csv don't exist for older seasons (pre-2019-20).
+SEASON_FILES_REQUIRED = [
+    "gws/merged_gw.csv",
+    "cleaned_players.csv",
+    "player_idlist.csv",
+]

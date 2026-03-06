@@ -81,16 +81,16 @@ action, _ = model.predict(obs, action_masks=env.action_masks())
 
 `MultiDiscrete([3, 15, 50, 15, 50, 15, 15, 6])` — 169 total mask length
 
-| Index | Dimension | Range | Meaning |
-|-------|-----------|-------|---------|
-| 0 | num_transfers | 0-2 | How many transfers to make |
-| 1 | transfer_out_1 | 0-14 | Squad index of player to sell |
-| 2 | transfer_in_1 | 0-49 | Candidate pool index of player to buy |
-| 3 | transfer_out_2 | 0-14 | Squad index of second player to sell |
-| 4 | transfer_in_2 | 0-49 | Candidate pool index of second player to buy |
-| 5 | captain | 0-14 | Squad index of captain |
-| 6 | vice_captain | 0-14 | Squad index of vice-captain |
-| 7 | chip | 0-5 | 0=none, 1=wildcard, 2=free_hit, 3=bench_boost, 4=triple_captain |
+| Index | Dimension      | Range | Meaning                                                         |
+| ----- | -------------- | ----- | --------------------------------------------------------------- |
+| 0     | num_transfers  | 0-2   | How many transfers to make                                      |
+| 1     | transfer_out_1 | 0-14  | Squad index of player to sell                                   |
+| 2     | transfer_in_1  | 0-49  | Candidate pool index of player to buy                           |
+| 3     | transfer_out_2 | 0-14  | Squad index of second player to sell                            |
+| 4     | transfer_in_2  | 0-49  | Candidate pool index of second player to buy                    |
+| 5     | captain        | 0-14  | Squad index of captain                                          |
+| 6     | vice_captain   | 0-14  | Squad index of vice-captain                                     |
+| 7     | chip           | 0-5   | 0=none, 1=wildcard, 2=free_hit, 3=bench_boost, 4=triple_captain |
 
 The candidate pool (50 players) is rebuilt each gameweek, ranked by recent form across all four positions.
 
@@ -98,11 +98,11 @@ The candidate pool (50 players) is rebuilt each gameweek, ranked by recent form 
 
 `Box(1363,)` — flat float32 vector
 
-| Block | Size | Content |
-|-------|------|---------|
-| Squad | 15 x 24 = 360 | Per-player: position (one-hot), price, form, xG, xA, ICT stats, minutes, is_starter, bench_order, is_captain, is_vice, purchase_price |
-| Pool | 50 x 19 = 950 | Per-candidate: position (one-hot), price, form, xG, xA, ICT stats, minutes, points |
-| Global | 53 | GW number, bank, free transfers, team value, total points, 8 chip booleans, 20 DGW flags, 20 BGW flags |
+| Block  | Size          | Content                                                                                                                               |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Squad  | 15 x 24 = 360 | Per-player: position (one-hot), price, form, xG, xA, ICT stats, minutes, is_starter, bench_order, is_captain, is_vice, purchase_price |
+| Pool   | 50 x 19 = 950 | Per-candidate: position (one-hot), price, form, xG, xA, ICT stats, minutes, points                                                    |
+| Global | 53            | GW number, bank, free transfers, team value, total points, 8 chip booleans, 20 DGW flags, 20 BGW flags                                |
 
 ### Reward
 

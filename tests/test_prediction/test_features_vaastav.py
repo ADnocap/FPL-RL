@@ -1,0 +1,414 @@
+"""Tests for vaastav rolling features module."""
+
+from __future__ import annotations
+
+import math
+
+import pandas as pd
+import pytest
+
+from fpl_rl.prediction.features.vaastav import (
+    FEATURE_COLUMNS,
+    compute_vaastav_features,
+)
+
+
+def _make_player_rows(
+    element: int,
+    gw_data: list[dict],
+) -> pd.DataFrame:
+    """Build a DataFrame of raw merged_gw rows for a single player.
+
+    Each entry in gw_data should have at minimum ``GW`` and ``total_points``.
+    Missing columns get sensible defaults.
+    """
+    defaults = {
+        "total_points": 0,
+        "minutes": 90,
+        "goals_scored": 0,
+        "assists": 0,
+        "clean_sheets": 0,
+        "bonus": 0,
+        "bps": 0,
+        "influence": 0.0,
+        "creativity": 0.0,
+        "threat": 0.0,
+        "ict_index": 0.0,
+        "value": 100,
+        "selected": 5_000_000,
+    }
+    rows = []
+    for gw in gw_data:
+        row = {**defaults, **gw, "element": element}
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# 1. Basic rolling computation on a 5-GW sequence for one player
+# ---------------------------------------------------------------------------
+class TestBasicRolling:
+    """Verify rolling windows produce correct values on a simple sequence."""
+
+    @pytest.fixture()
+    def single_player(self) -> pd.DataFrame:
+        """One player, 5 consecutive GWs, known total_points = [2, 4, 6, 8, 10]."""
+        return _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 2, "minutes": 90},
+                {"GW": 2, "total_points": 4, "minutes": 80},
+                {"GW": 3, "total_points": 6, "minutes": 70},
+                {"GW": 4, "total_points": 8, "minutes": 60},
+                {"GW": 5, "total_points": 10, "minutes": 50},
+            ],
+        )
+
+    def test_pts_rolling_3(self, single_player: pd.DataFrame) -> None:
+        result = compute_vaastav_features(single_player)
+        pts3 = result.set_index("GW")["pts_rolling_3"]
+
+        # GW1: shift means no prior data -> NaN
+        assert math.isnan(pts3[1])
+        # GW2: shift -> only GW1 data (2). rolling(3, min_periods=1) -> mean([2]) = 2.0
+        assert pts3[2] == pytest.approx(2.0)
+        # GW3: shift -> GW1,GW2 data (2,4). rolling(3, min_periods=1) -> mean([2,4]) = 3.0
+        assert pts3[3] == pytest.approx(3.0)
+        # GW4: shift -> GW1,GW2,GW3 (2,4,6). rolling(3) -> mean([2,4,6]) = 4.0
+        assert pts3[4] == pytest.approx(4.0)
+        # GW5: shift -> GW2,GW3,GW4 (4,6,8). rolling(3) -> mean([4,6,8]) = 6.0
+        assert pts3[5] == pytest.approx(6.0)
+
+    def test_pts_rolling_5(self, single_player: pd.DataFrame) -> None:
+        result = compute_vaastav_features(single_player)
+        pts5 = result.set_index("GW")["pts_rolling_5"]
+
+        # GW5: shift -> GW1..4 (2,4,6,8). rolling(5, min_periods=1) -> mean = 5.0
+        assert pts5[5] == pytest.approx(5.0)
+
+    def test_mins_rolling_3(self, single_player: pd.DataFrame) -> None:
+        result = compute_vaastav_features(single_player)
+        mins3 = result.set_index("GW")["mins_rolling_3"]
+
+        # GW4: shift -> GW1,GW2,GW3 mins = (90,80,70). rolling(3) -> mean = 80.0
+        assert mins3[4] == pytest.approx(80.0)
+
+    def test_goals_rolling_sum(self) -> None:
+        """goals_rolling_3 should be a *sum*, not a mean."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "goals_scored": 1},
+                {"GW": 2, "goals_scored": 2},
+                {"GW": 3, "goals_scored": 3},
+                {"GW": 4, "goals_scored": 4},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        g3 = result.set_index("GW")["goals_rolling_3"]
+
+        # GW4: shift -> GW1,GW2,GW3 = (1,2,3). rolling(3).sum() = 6
+        assert g3[4] == pytest.approx(6.0)
+
+    def test_output_shape(self, single_player: pd.DataFrame) -> None:
+        result = compute_vaastav_features(single_player)
+        # One row per GW
+        assert len(result) == 5
+        # All feature columns plus element and GW
+        assert "element" in result.columns
+        assert "GW" in result.columns
+        for col in FEATURE_COLUMNS:
+            assert col in result.columns, f"Missing column: {col}"
+
+
+# ---------------------------------------------------------------------------
+# 2. DGW aggregation
+# ---------------------------------------------------------------------------
+class TestDGWAggregation:
+    """Multiple fixture rows for the same (element, GW) get summed."""
+
+    def test_dgw_points_summed(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 3, "minutes": 90},
+                {"GW": 2, "total_points": 5, "minutes": 90},  # fixture 1
+                {"GW": 2, "total_points": 7, "minutes": 90},  # fixture 2 (DGW)
+                {"GW": 3, "total_points": 4, "minutes": 90},
+            ],
+        )
+        result = compute_vaastav_features(df)
+
+        # After DGW aggregation, GW2 total_points = 5 + 7 = 12
+        # GW3: shift -> only GW1(3), GW2(12) available for rolling.
+        # pts_rolling_3 at GW3 = mean([3, 12]) = 7.5  (min_periods=1, only 2 values)
+        pts3 = result.set_index("GW")["pts_rolling_3"]
+        assert pts3[3] == pytest.approx(7.5)
+
+    def test_dgw_produces_one_row_per_gw(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 3},
+                {"GW": 2, "total_points": 5},
+                {"GW": 2, "total_points": 7},  # DGW
+            ],
+        )
+        result = compute_vaastav_features(df)
+        assert len(result) == 2
+        assert list(result["GW"]) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 3. No-lookahead test
+# ---------------------------------------------------------------------------
+class TestNoLookahead:
+    """Rolling features for GW=k must use only data from GW < k."""
+
+    def test_gw3_uses_only_gw1_gw2(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 10},
+                {"GW": 2, "total_points": 20},
+                {"GW": 3, "total_points": 100},  # should NOT affect GW3 features
+            ],
+        )
+        result = compute_vaastav_features(df)
+        row_gw3 = result[result["GW"] == 3].iloc[0]
+
+        # pts_rolling_3 at GW3: shift -> (10, 20), rolling(3, min_periods=1) = mean(10,20) = 15
+        assert row_gw3["pts_rolling_3"] == pytest.approx(15.0)
+        # season_avg_pts at GW3: expanding mean of shifted (10, 20) = 15
+        assert row_gw3["season_avg_pts"] == pytest.approx(15.0)
+
+    def test_gw1_has_nan_rolling(self) -> None:
+        """GW1 cannot have any prior data, so rolling features are NaN."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 99},
+                {"GW": 2, "total_points": 1},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        row_gw1 = result[result["GW"] == 1].iloc[0]
+
+        assert math.isnan(row_gw1["pts_rolling_3"])
+        assert math.isnan(row_gw1["pts_rolling_5"])
+        assert math.isnan(row_gw1["season_avg_pts"])
+
+
+# ---------------------------------------------------------------------------
+# 4. Multiple players don't cross-contaminate
+# ---------------------------------------------------------------------------
+class TestMultiplePlayersIsolation:
+    """Features for player A must not depend on player B's data."""
+
+    def test_two_players_independent(self) -> None:
+        player_a = _make_player_rows(
+            element=10,
+            gw_data=[
+                {"GW": 1, "total_points": 2},
+                {"GW": 2, "total_points": 4},
+                {"GW": 3, "total_points": 6},
+            ],
+        )
+        player_b = _make_player_rows(
+            element=20,
+            gw_data=[
+                {"GW": 1, "total_points": 100},
+                {"GW": 2, "total_points": 200},
+                {"GW": 3, "total_points": 300},
+            ],
+        )
+        combined = pd.concat([player_a, player_b], ignore_index=True)
+        result = compute_vaastav_features(combined)
+
+        # Player A, GW3: shift -> (2, 4). rolling(3, min_periods=1) = mean(2,4) = 3.0
+        a_gw3 = result[(result["element"] == 10) & (result["GW"] == 3)].iloc[0]
+        assert a_gw3["pts_rolling_3"] == pytest.approx(3.0)
+
+        # Player B, GW3: shift -> (100, 200). rolling(3, min_periods=1) = mean(100,200) = 150.0
+        b_gw3 = result[(result["element"] == 20) & (result["GW"] == 3)].iloc[0]
+        assert b_gw3["pts_rolling_3"] == pytest.approx(150.0)
+
+    def test_output_has_all_players(self) -> None:
+        player_a = _make_player_rows(element=10, gw_data=[{"GW": 1, "total_points": 5}])
+        player_b = _make_player_rows(element=20, gw_data=[{"GW": 1, "total_points": 9}])
+        combined = pd.concat([player_a, player_b], ignore_index=True)
+        result = compute_vaastav_features(combined)
+
+        assert set(result["element"]) == {10, 20}
+        assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# 5. First GW gets NaN for rolling features
+# ---------------------------------------------------------------------------
+class TestFirstGWNaN:
+    """The very first GW for a player should have NaN rolling features."""
+
+    def test_all_rolling_nan_at_gw1(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 5, "minutes": 90, "goals_scored": 1},
+                {"GW": 2, "total_points": 3, "minutes": 60, "goals_scored": 0},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        row_gw1 = result[result["GW"] == 1].iloc[0]
+
+        # All rolling and expanding features should be NaN at GW1
+        rolling_cols = [
+            "pts_rolling_3", "pts_rolling_5", "pts_rolling_10",
+            "mins_rolling_3", "mins_rolling_5",
+            "goals_rolling_3", "goals_rolling_5",
+            "assists_rolling_3", "assists_rolling_5",
+            "cs_rolling_5", "cs_rolling_10",
+            "bonus_rolling_5", "bonus_rolling_10",
+            "bps_rolling_5", "bps_rolling_10",
+            "ict_rolling_3", "ict_rolling_5", "ict_rolling_10",
+            "influence_rolling_5", "creativity_rolling_5", "threat_rolling_5",
+            "season_avg_pts", "season_total_mins",
+        ]
+        for col in rolling_cols:
+            assert math.isnan(row_gw1[col]), f"{col} should be NaN at GW1"
+
+    def test_value_and_selected_norm_not_nan_at_gw1(self) -> None:
+        """value and selected_norm come from the current row, so never NaN."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[{"GW": 1, "total_points": 5, "value": 100, "selected": 5_000_000}],
+        )
+        result = compute_vaastav_features(df)
+        row_gw1 = result[result["GW"] == 1].iloc[0]
+
+        assert row_gw1["value"] == 100
+        assert row_gw1["selected_norm"] == pytest.approx(0.5)
+
+    def test_games_played_zero_at_gw1(self) -> None:
+        """games_played at GW1 should be 0 (no prior GWs)."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 5, "minutes": 90},
+                {"GW": 2, "total_points": 3, "minutes": 60},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        row_gw1 = result[result["GW"] == 1].iloc[0]
+        assert row_gw1["games_played"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# 6. season_avg_pts expanding correctness
+# ---------------------------------------------------------------------------
+class TestSeasonAvgPts:
+    """season_avg_pts should be the expanding mean of prior-GW total_points."""
+
+    def test_expanding_mean_sequence(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 10},
+                {"GW": 2, "total_points": 20},
+                {"GW": 3, "total_points": 30},
+                {"GW": 4, "total_points": 40},
+                {"GW": 5, "total_points": 50},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        avg = result.set_index("GW")["season_avg_pts"]
+
+        # GW1: NaN (no prior data)
+        assert math.isnan(avg[1])
+        # GW2: expanding mean of shifted [10] = 10.0
+        assert avg[2] == pytest.approx(10.0)
+        # GW3: expanding mean of shifted [10, 20] = 15.0
+        assert avg[3] == pytest.approx(15.0)
+        # GW4: expanding mean of shifted [10, 20, 30] = 20.0
+        assert avg[4] == pytest.approx(20.0)
+        # GW5: expanding mean of shifted [10, 20, 30, 40] = 25.0
+        assert avg[5] == pytest.approx(25.0)
+
+    def test_season_total_mins(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "minutes": 90},
+                {"GW": 2, "minutes": 60},
+                {"GW": 3, "minutes": 45},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        total = result.set_index("GW")["season_total_mins"]
+
+        # GW1: NaN
+        assert math.isnan(total[1])
+        # GW2: sum of shifted [90] = 90
+        assert total[2] == pytest.approx(90.0)
+        # GW3: sum of shifted [90, 60] = 150
+        assert total[3] == pytest.approx(150.0)
+
+    def test_games_played_counts_prior(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "minutes": 90},
+                {"GW": 2, "minutes": 0},   # did not play
+                {"GW": 3, "minutes": 60},
+                {"GW": 4, "minutes": 45},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        gp = result.set_index("GW")["games_played"]
+
+        # GW1: 0 prior games
+        assert gp[1] == pytest.approx(0.0)
+        # GW2: 1 prior game (GW1 had 90 > 0)
+        assert gp[2] == pytest.approx(1.0)
+        # GW3: 1 prior game (GW1 played, GW2 did not)
+        assert gp[3] == pytest.approx(1.0)
+        # GW4: 2 prior games (GW1 and GW3 played)
+        assert gp[4] == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# 7. mins_std_5 sanity check
+# ---------------------------------------------------------------------------
+class TestMinsStd:
+    """mins_std_5 should be the rolling std of shifted minutes."""
+
+    def test_constant_minutes_std_is_zero(self) -> None:
+        """If all prior minutes are the same, std should be 0."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": gw, "minutes": 90}
+                for gw in range(1, 8)
+            ],
+        )
+        result = compute_vaastav_features(df)
+        std5 = result.set_index("GW")["mins_std_5"]
+
+        # GW7: shift -> GW1..6 all 90. rolling(5) window is [90,90,90,90,90] -> std = 0
+        assert std5[7] == pytest.approx(0.0)
+
+    def test_varied_minutes_std(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "minutes": 90},
+                {"GW": 2, "minutes": 0},
+                {"GW": 3, "minutes": 90},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        std5 = result.set_index("GW")["mins_std_5"]
+
+        # GW3: shift -> [90, 0]. rolling(5, min_periods=1).std()
+        # pandas std with ddof=1: std([90, 0]) = 63.639...
+        expected = pd.Series([90.0, 0.0]).std()  # ddof=1 default
+        assert std5[3] == pytest.approx(expected)
