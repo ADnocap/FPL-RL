@@ -210,9 +210,17 @@ def _load_fbref_features(
         if fb_id is not None:
             fbref_id_to_code[fb_id] = code
 
+        # Use full name (first + second) for FBref matching, since FBref
+        # parquets contain full player names like "Mohamed Salah"
+        full_name = id_resolver.player_full_name(code)
+        if full_name:
+            name_to_code[_normalize_name(full_name)] = code
+        # Also add web_name as fallback for single-name players (e.g. "Jorginho")
         pname = id_resolver.player_name(code)
         if pname and pname != "Unknown":
-            name_to_code[_normalize_name(pname)] = code
+            norm = _normalize_name(pname)
+            if norm not in name_to_code:
+                name_to_code[norm] = code
 
     # Initialize result dict: code -> feature dict
     result: dict[int, dict] = {code: {"code": code} for code in codes}

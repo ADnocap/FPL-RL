@@ -39,3 +39,4 @@ fpl_tb/
 *.zip
 *.json
 !pyproject.toml
+models

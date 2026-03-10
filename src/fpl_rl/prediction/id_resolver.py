@@ -43,6 +43,7 @@ class IDResolver:
         self._season_eid_to_code: dict[tuple[str, int], int] = {}
         self._code_to_season_eid: dict[tuple[int, str], int] = {}
         self._code_to_name: dict[int, str] = {}
+        self._code_to_full_name: dict[int, str] = {}
 
         for _, row in df.iterrows():
             code = int(row["code"])
@@ -50,7 +51,14 @@ class IDResolver:
             # Name mapping
             web_name = str(row.get("web_name", ""))
             second_name = str(row.get("second_name", ""))
+            first_name = str(row.get("first_name", ""))
             self._code_to_name[code] = web_name or second_name
+
+            # Full name for cross-source matching (e.g. FBref)
+            if first_name and second_name and first_name != "nan" and second_name != "nan":
+                self._code_to_full_name[code] = f"{first_name} {second_name}"
+            elif second_name and second_name != "nan":
+                self._code_to_full_name[code] = second_name
 
             # Understat ID
             us_id = row.get("understat")
@@ -97,6 +105,10 @@ class IDResolver:
     def player_name(self, code: int) -> str:
         """Map code -> web_name (for display/debugging)."""
         return self._code_to_name.get(code, "Unknown")
+
+    def player_full_name(self, code: int) -> str | None:
+        """Map code -> 'first_name second_name' (for cross-source matching)."""
+        return self._code_to_full_name.get(code)
 
     def all_codes_for_season(self, season: str) -> list[int]:
         """Return all stable codes that have an element_id in the given season."""

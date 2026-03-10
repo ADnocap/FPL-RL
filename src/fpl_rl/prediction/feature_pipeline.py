@@ -85,6 +85,29 @@ class FeaturePipeline:
             return pd.DataFrame()
 
         result = pd.concat(all_season_dfs, ignore_index=True)
+
+        # Back-fill position for old seasons using cross-season code mapping.
+        # A player's FPL position (GK/DEF/MID/FWD) is stable across seasons,
+        # so we can copy it from any season that has it.
+        if "position" in result.columns and "code" in result.columns:
+            missing_pos = result["position"].isna()
+            if missing_pos.any():
+                # Build code -> position from rows that have position
+                code_pos = (
+                    result.loc[~missing_pos, ["code", "position"]]
+                    .drop_duplicates("code")
+                    .set_index("code")["position"]
+                )
+                filled = result.loc[missing_pos, "code"].map(code_pos)
+                result.loc[missing_pos, "position"] = filled.values
+                n_filled = filled.notna().sum()
+                n_still_missing = filled.isna().sum()
+                logger.info(
+                    "Position back-fill: %d filled from other seasons, "
+                    "%d still missing",
+                    n_filled, n_still_missing,
+                )
+
         logger.info(
             "Feature pipeline complete: %d rows x %d columns",
             len(result), len(result.columns),
@@ -123,14 +146,8 @@ class FeaturePipeline:
                 {True: True, False: False, "True": True, "False": False, 1: True, 0: False}
             ).fillna(False)
 
-        # Ensure 'team' is a numeric column (some seasons have team names, some lack it)
-        merged_gw = self._ensure_numeric_team(merged_gw, raw_dir)
-
-        # Ensure opponent_team is numeric
-        if "opponent_team" in merged_gw.columns:
-            merged_gw["opponent_team"] = pd.to_numeric(
-                merged_gw["opponent_team"], errors="coerce"
-            )
+        # Ensure 'team' column exists and is consistent with opponent_team
+        merged_gw = self._ensure_team_column(merged_gw, raw_dir)
 
         # 2. Map element_id -> code
         merged_gw["code"] = merged_gw["element"].apply(
@@ -253,45 +270,99 @@ class FeaturePipeline:
         # Fallback: position column in merged_gw
         if "position" in merged_gw.columns:
             pos_df = merged_gw[["element", "position"]].drop_duplicates("element")
+            # Normalise non-standard position labels
+            pos_df["position"] = pos_df["position"].replace(
+                {"GKP": "GK", "AM": "MID"}
+            )
             return pos_df
 
         return pd.DataFrame(columns=["element", "position"])
 
     @staticmethod
-    def _ensure_numeric_team(merged_gw: pd.DataFrame, raw_dir: Path) -> pd.DataFrame:
-        """Ensure 'team' column is numeric (int team IDs).
+    def _ensure_team_column(merged_gw: pd.DataFrame, raw_dir: Path) -> pd.DataFrame:
+        """Ensure ``team`` and ``opponent_team`` use the same numeric ID space.
 
-        Some seasons have string team names or lack the column entirely.
-        Falls back to cleaned_players.csv for the element -> team mapping.
+        The opponent feature code groups by ``team`` and merges via
+        ``opponent_team``, so they must use the same identifier type.
+        Other code (teams.csv, fixtures.csv merges) also expects numeric IDs.
+
+        Handles three cases:
+        1. team already numeric → keep as-is
+        2. team is string names, opponent_team is numeric → convert team
+           to numeric IDs by deriving a name→id mapping from fixture pairs
+        3. No team column → derive from opponent_team via fixture structure
         """
-        has_team = "team" in merged_gw.columns
+        merged_gw = merged_gw.copy()
+
+        has_opp = "opponent_team" in merged_gw.columns
+        if has_opp:
+            merged_gw["opponent_team"] = pd.to_numeric(
+                merged_gw["opponent_team"], errors="coerce"
+            )
+
+        has_team = "team" in merged_gw.columns and merged_gw["team"].notna().mean() > 0.5
+
         if has_team:
-            # Check if already numeric
+            # Check if team is already numeric
             numeric_team = pd.to_numeric(merged_gw["team"], errors="coerce")
             if numeric_team.notna().mean() > 0.5:
                 merged_gw["team"] = numeric_team
                 return merged_gw
-            # Non-numeric (string names) — drop and rebuild from cleaned_players
+
+            # team is string — convert to numeric using opponent_team mapping.
+            # For fixture F with teams A vs B: players on A have opponent_team
+            # equal to B's numeric ID, and vice versa. So A's own numeric ID
+            # is what B's players see as opponent_team.
+            if has_opp and "fixture" in merged_gw.columns:
+                opp_map = (
+                    merged_gw[["fixture", "team", "opponent_team"]]
+                    .drop_duplicates(subset=["fixture", "team"])
+                )
+                name_to_id: dict[str, int] = {}
+                for _, group in opp_map.groupby("fixture"):
+                    pairs = group[["team", "opponent_team"]].values.tolist()
+                    if len(pairs) == 2:
+                        name_a, opp_id_a = pairs[0]
+                        name_b, opp_id_b = pairs[1]
+                        try:
+                            # A's opponent_team is B's ID, B's opponent_team is A's ID
+                            name_to_id[str(name_a)] = int(opp_id_b)
+                            name_to_id[str(name_b)] = int(opp_id_a)
+                        except (ValueError, TypeError):
+                            pass
+
+                if name_to_id:
+                    merged_gw["team"] = merged_gw["team"].map(name_to_id)
+                    return merged_gw
+
+            # Cannot convert — drop and try to derive below
             merged_gw = merged_gw.drop(columns=["team"])
 
-        # Look up team from cleaned_players.csv
-        cp_path = raw_dir / "cleaned_players.csv"
-        if cp_path.exists():
-            try:
-                cp = pd.read_csv(cp_path, encoding="utf-8", on_bad_lines="skip")
-            except UnicodeDecodeError:
-                cp = pd.read_csv(cp_path, encoding="latin-1", on_bad_lines="skip")
-            if "id" in cp.columns and "team" in cp.columns:
-                team_map = cp[["id", "team"]].drop_duplicates("id")
-                team_map["team"] = pd.to_numeric(team_map["team"], errors="coerce")
-                merged_gw = merged_gw.merge(
-                    team_map.rename(columns={"id": "element"}),
-                    on="element", how="left",
-                )
-                return merged_gw
+        # No usable team column — derive from fixture structure
+        if has_opp and "fixture" in merged_gw.columns:
+            fixture_teams = (
+                merged_gw[["fixture", "opponent_team"]]
+                .drop_duplicates()
+            )
+            fixture_groups = fixture_teams.groupby("fixture")["opponent_team"].apply(set)
+            team_lookup: dict[tuple, object] = {}
+            for fix_id, teams in fixture_groups.items():
+                if len(teams) == 2:
+                    t_list = list(teams)
+                    team_lookup[(fix_id, t_list[0])] = t_list[1]
+                    team_lookup[(fix_id, t_list[1])] = t_list[0]
 
-        # Last resort: set team to NaN
-        merged_gw["team"] = pd.NA
+            if team_lookup:
+                merged_gw["team"] = merged_gw.apply(
+                    lambda r: team_lookup.get((r["fixture"], r["opponent_team"])),
+                    axis=1,
+                )
+                if merged_gw["team"].notna().mean() > 0.5:
+                    return merged_gw
+
+        # Last resort
+        if "team" not in merged_gw.columns:
+            merged_gw["team"] = pd.NA
         return merged_gw
 
     @staticmethod
