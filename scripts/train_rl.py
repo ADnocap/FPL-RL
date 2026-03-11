@@ -62,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--shuffle-seasons", action="store_true",
                    help="Randomly sample training seasons instead of cycling")
 
+    # Resume
+    p.add_argument("--resume", type=Path, default=None,
+                   help="Path to saved model to resume training from")
+
     # Output
     p.add_argument("--run-dir", type=Path, default=Path("runs/fpl_ppo"),
                    help="Directory for logs and saved models")
@@ -112,21 +116,34 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info("Creating MaskablePPO ...")
-    model = MaskablePPO(
-        "MlpPolicy",
-        train_env,
-        n_steps=args.n_steps,
-        batch_size=args.batch_size,
-        n_epochs=args.n_epochs,
-        learning_rate=args.learning_rate,
-        gamma=args.gamma,
-        ent_coef=args.ent_coef,
-        policy_kwargs=dict(net_arch=args.net_arch),
-        tensorboard_log=str(run_dir / "tb_logs"),
-        seed=args.seed,
-        verbose=args.verbose,
-    )
+    tb_log_path = str(run_dir / "tb_logs")
+
+    if args.resume:
+        log.info("Resuming from %s ...", args.resume)
+        model = MaskablePPO.load(
+            str(args.resume),
+            env=train_env,
+            tensorboard_log=tb_log_path,
+            learning_rate=args.learning_rate,
+            ent_coef=args.ent_coef,
+            device="cpu",
+        )
+    else:
+        log.info("Creating MaskablePPO ...")
+        model = MaskablePPO(
+            "MlpPolicy",
+            train_env,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.n_epochs,
+            learning_rate=args.learning_rate,
+            gamma=args.gamma,
+            ent_coef=args.ent_coef,
+            policy_kwargs=dict(net_arch=args.net_arch),
+            tensorboard_log=tb_log_path,
+            seed=args.seed,
+            verbose=args.verbose,
+        )
 
     # --- Callbacks ---
     best_model_path = run_dir / "best_model"
@@ -146,6 +163,7 @@ def main() -> None:
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=[eval_cb, episode_cb],
+        reset_num_timesteps=args.resume is None,
     )
 
     # Save final model

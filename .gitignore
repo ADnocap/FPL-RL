@@ -41,3 +41,4 @@ fpl_tb/
 !pyproject.toml
 
 colab/*
+node_modules/

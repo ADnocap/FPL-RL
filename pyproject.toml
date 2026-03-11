@@ -22,6 +22,10 @@ prediction = [
 optimizer = [
     "pulp>=2.7",
 ]
+webapp = [
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",

@@ -155,3 +155,16 @@ Tests use hand-crafted CSVs in `tests/test_data/` (18 players, 2 GWs). The `Seas
 - [ ] **Stage 1:** XGBoost/LightGBM point prediction model (predicted points as observation feature)
 - [ ] **Stage 2:** PuLP/HiGHS MILP optimizer for team selection (uses engine directly, no RL)
 - [ ] **Stage 3:** Full MaskablePPO training across multiple historical seasons
+
+## Run app
+
+### Backend
+
+pip install -e ".[webapp]"
+uvicorn webapp.backend.main:app --reload
+
+### Frontend (separate terminal)
+
+cd webapp/frontend && npm install && npm run dev
+
+Then open http://localhost:5173, select a season, and click Simulate.
