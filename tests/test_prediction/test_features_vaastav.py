@@ -36,6 +36,16 @@ def _make_player_rows(
         "ict_index": 0.0,
         "value": 100,
         "selected": 5_000_000,
+        "saves": 0,
+        "goals_conceded": 0,
+        "transfers_balance": 0,
+        "yellow_cards": 0,
+        "red_cards": 0,
+        "starts": 0,
+        "expected_goals": 0.0,
+        "expected_assists": 0.0,
+        "expected_goal_involvements": 0.0,
+        "expected_goals_conceded": 0.0,
     }
     rows = []
     for gw in gw_data:
@@ -412,3 +422,135 @@ class TestMinsStd:
         # pandas std with ddof=1: std([90, 0]) = 63.639...
         expected = pd.Series([90.0, 0.0]).std()  # ddof=1 default
         assert std5[3] == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# 8. New rolling features (saves, goals_conceded, etc.)
+# ---------------------------------------------------------------------------
+class TestNewRollingFeatures:
+    """Test the 10 new rolling features added for model improvement."""
+
+    def test_saves_rolling_5(self) -> None:
+        """saves_rolling_5 should be the rolling mean of saves."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": gw, "saves": gw}
+                for gw in range(1, 7)
+            ],
+        )
+        result = compute_vaastav_features(df)
+        saves5 = result.set_index("GW")["saves_rolling_5"]
+
+        # GW6: shift -> GW1..5 saves = (1,2,3,4,5). rolling(5) mean = 3.0
+        assert saves5[6] == pytest.approx(3.0)
+
+    def test_goals_conceded_rolling_5(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "goals_conceded": 2},
+                {"GW": 2, "goals_conceded": 0},
+                {"GW": 3, "goals_conceded": 1},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        gc5 = result.set_index("GW")["goals_conceded_rolling_5"]
+
+        # GW3: shift -> (2, 0). rolling(5, min_periods=1) mean = 1.0
+        assert gc5[3] == pytest.approx(1.0)
+
+    def test_transfers_balance_rolling_3(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "transfers_balance": 1000},
+                {"GW": 2, "transfers_balance": -500},
+                {"GW": 3, "transfers_balance": 200},
+                {"GW": 4, "transfers_balance": 300},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        tb3 = result.set_index("GW")["transfers_balance_rolling_3"]
+
+        # GW4: shift -> (1000, -500, 200). rolling(3) mean ≈ 233.33
+        assert tb3[4] == pytest.approx(700 / 3, abs=0.01)
+
+    def test_yellows_rolling_5_is_sum(self) -> None:
+        """yellows_rolling_5 should be a sum, not a mean."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "yellow_cards": 1},
+                {"GW": 2, "yellow_cards": 0},
+                {"GW": 3, "yellow_cards": 1},
+                {"GW": 4, "yellow_cards": 1},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        yel5 = result.set_index("GW")["yellows_rolling_5"]
+
+        # GW4: shift -> (1, 0, 1). rolling(5, min_periods=1).sum() = 2
+        assert yel5[4] == pytest.approx(2.0)
+
+    def test_fpl_xg_rolling_5(self) -> None:
+        """FPL expected_goals rolling feature."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": gw, "expected_goals": 0.5 * gw}
+                for gw in range(1, 7)
+            ],
+        )
+        result = compute_vaastav_features(df)
+        fxg5 = result.set_index("GW")["fpl_xg_rolling_5"]
+
+        # GW6: shift -> GW1..5 xG = (0.5,1.0,1.5,2.0,2.5). mean = 1.5
+        assert fxg5[6] == pytest.approx(1.5)
+
+    def test_new_features_in_feature_columns(self) -> None:
+        """All 10 new feature columns should be in FEATURE_COLUMNS."""
+        new_cols = [
+            "saves_rolling_5", "goals_conceded_rolling_5",
+            "transfers_balance_rolling_3", "yellows_rolling_5",
+            "reds_rolling_10", "starts_rolling_5",
+            "fpl_xg_rolling_5", "fpl_xa_rolling_5",
+            "fpl_xgi_rolling_5", "fpl_xgc_rolling_5",
+        ]
+        for col in new_cols:
+            assert col in FEATURE_COLUMNS, f"{col} missing from FEATURE_COLUMNS"
+
+
+# ---------------------------------------------------------------------------
+# 9. Missing-column guard
+# ---------------------------------------------------------------------------
+class TestMissingColumnGuard:
+    """When source columns don't exist, output should be NaN."""
+
+    def test_missing_source_col_produces_nan(self) -> None:
+        """If a source column (e.g. 'starts') is absent, the output is NaN."""
+        # Build a DataFrame WITHOUT the 'starts' column
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 5},
+                {"GW": 2, "total_points": 3},
+            ],
+        )
+        # Explicitly remove columns that some specs reference
+        cols_to_drop = [c for c in ["starts", "expected_goals", "expected_assists",
+                                      "expected_goal_involvements",
+                                      "expected_goals_conceded"]
+                        if c in df.columns]
+        df = df.drop(columns=cols_to_drop)
+
+        result = compute_vaastav_features(df)
+
+        # Features depending on missing cols should be NaN
+        for col in ["starts_rolling_5", "fpl_xg_rolling_5", "fpl_xa_rolling_5",
+                     "fpl_xgi_rolling_5", "fpl_xgc_rolling_5"]:
+            assert col in result.columns, f"{col} should exist even when source is missing"
+            assert result[col].isna().all(), f"{col} should be all NaN when source col is missing"
+
+        # Features depending on existing cols should still work
+        assert not result["pts_rolling_3"].isna().all()  # GW2 should have a value

@@ -20,7 +20,8 @@ from fpl_rl.prediction.features.understat import (
 # ---------------------------------------------------------------------------
 
 def _make_match(date: str, xG: float, xA: float, npxG: float,
-                shots: int, key_passes: int) -> dict:
+                shots: int, key_passes: int,
+                xGChain: float = 0.0, xGBuildup: float = 0.0) -> dict:
     """Create a single understat match dict with string-typed values."""
     return {
         "date": date,
@@ -41,8 +42,8 @@ def _make_match(date: str, xG: float, xA: float, npxG: float,
         "roster_id": "12345",
         "assists": "0",
         "npg": "0",
-        "xGChain": "0",
-        "xGBuildup": "0",
+        "xGChain": str(xGChain),
+        "xGBuildup": str(xGBuildup),
     }
 
 
@@ -75,11 +76,11 @@ def pred_data_dir_understat(pred_data_dir: Path) -> Path:
     Creates 5 matches for the 2023-24 season.
     """
     matches = [
-        _make_match("2023-08-12", xG=0.5, xA=0.1, npxG=0.4, shots=3, key_passes=1),
-        _make_match("2023-08-19", xG=1.0, xA=0.2, npxG=0.8, shots=5, key_passes=2),
-        _make_match("2023-08-26", xG=0.3, xA=0.0, npxG=0.2, shots=2, key_passes=0),
-        _make_match("2023-09-02", xG=0.8, xA=0.3, npxG=0.7, shots=4, key_passes=3),
-        _make_match("2023-09-16", xG=0.6, xA=0.1, npxG=0.5, shots=3, key_passes=1),
+        _make_match("2023-08-12", xG=0.5, xA=0.1, npxG=0.4, shots=3, key_passes=1, xGChain=0.7, xGBuildup=0.2),
+        _make_match("2023-08-19", xG=1.0, xA=0.2, npxG=0.8, shots=5, key_passes=2, xGChain=1.3, xGBuildup=0.4),
+        _make_match("2023-08-26", xG=0.3, xA=0.0, npxG=0.2, shots=2, key_passes=0, xGChain=0.4, xGBuildup=0.1),
+        _make_match("2023-09-02", xG=0.8, xA=0.3, npxG=0.7, shots=4, key_passes=3, xGChain=1.0, xGBuildup=0.3),
+        _make_match("2023-09-16", xG=0.6, xA=0.1, npxG=0.5, shots=3, key_passes=1, xGChain=0.8, xGBuildup=0.2),
     ]
     _write_understat_json(pred_data_dir, "2023-24", 1234, matches)
 
@@ -362,3 +363,57 @@ class TestEdgeCases:
         # GW1: 1 match (xG=0.5), GW2: 2 matches (xG=0.5, 1.0)
         assert kane.iloc[0]["xg_rolling_5"] == pytest.approx(0.5, abs=1e-6)
         assert kane.iloc[1]["xg_rolling_5"] == pytest.approx(0.75, abs=1e-6)
+
+
+class TestXGChainAndBuildup:
+    """Test xGChain and xGBuildup rolling features."""
+
+    def test_xgchain_columns_in_feature_columns(self) -> None:
+        """New columns should be in FEATURE_COLUMNS."""
+        assert "xgchain_rolling_5" in FEATURE_COLUMNS
+        assert "xgchain_rolling_10" in FEATURE_COLUMNS
+        assert "xgbuildup_rolling_5" in FEATURE_COLUMNS
+
+    def test_xgchain_rolling_5_values(
+        self, pred_data_dir_understat: Path, resolver: IDResolver, gw_dates: pd.Series
+    ) -> None:
+        """Verify xgchain_rolling_5 for Kane (code=100).
+
+        Matches (xGChain): 0.7, 1.3, 0.4, 1.0, 0.8
+        GW5: all 5 matches -> mean = 0.84
+        """
+        df = compute_understat_features(
+            pred_data_dir_understat, "2023-24", resolver, gw_dates,
+        )
+        kane = df[df["code"] == 100].sort_values("GW")
+        xgc5_gw5 = kane[kane["GW"] == 5]["xgchain_rolling_5"].iloc[0]
+        assert xgc5_gw5 == pytest.approx(0.84, abs=1e-6)
+
+    def test_xgbuildup_rolling_5_values(
+        self, pred_data_dir_understat: Path, resolver: IDResolver, gw_dates: pd.Series
+    ) -> None:
+        """Verify xgbuildup_rolling_5 for Kane (code=100).
+
+        Matches (xGBuildup): 0.2, 0.4, 0.1, 0.3, 0.2
+        GW5: all 5 matches -> mean = 0.24
+        """
+        df = compute_understat_features(
+            pred_data_dir_understat, "2023-24", resolver, gw_dates,
+        )
+        kane = df[df["code"] == 100].sort_values("GW")
+        xgb5_gw5 = kane[kane["GW"] == 5]["xgbuildup_rolling_5"].iloc[0]
+        assert xgb5_gw5 == pytest.approx(0.24, abs=1e-6)
+
+    def test_xgchain_rolling_3_accumulates(
+        self, pred_data_dir_understat: Path, resolver: IDResolver, gw_dates: pd.Series
+    ) -> None:
+        """xgchain_rolling_10 should use available matches (min_periods=1)."""
+        df = compute_understat_features(
+            pred_data_dir_understat, "2023-24", resolver, gw_dates,
+        )
+        kane = df[df["code"] == 100].sort_values("GW")
+
+        # GW1: 1 match (xGChain=0.7)
+        assert kane.iloc[0]["xgchain_rolling_10"] == pytest.approx(0.7, abs=1e-6)
+        # GW3: 3 matches (0.7, 1.3, 0.4) -> mean = 0.8
+        assert kane.iloc[2]["xgchain_rolling_10"] == pytest.approx(0.8, abs=1e-6)

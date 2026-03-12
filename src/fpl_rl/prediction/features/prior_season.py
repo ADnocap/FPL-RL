@@ -381,10 +381,18 @@ def _extract_defense(
     player_col = _get_player_col(df)
     nineties_col = _get_90s_col(df)
 
-    # Tkl+Int is often a single column
+    # Tkl+Int is often a single column — but verify it has numeric data
     tkl_int_col = _find_col(cols, "tkl+int")
+    if tkl_int_col is not None:
+        if pd.to_numeric(df[tkl_int_col], errors="coerce").notna().mean() < 0.1:
+            tkl_int_col = None  # Column exists but has no numeric data
+
     # Fallback: separate Tackles_Tkl and Int columns
     tkl_col = _find_col(cols, "tackles", "tkl") if tkl_int_col is None else None
+    if tkl_col is not None:
+        if pd.to_numeric(df[tkl_col], errors="coerce").notna().mean() < 0.1:
+            tkl_col = None  # Column exists but has no numeric data
+
     int_col = _find_col(cols, "int") if tkl_int_col is None else None
     # Be careful: "int" might also match "Challenges_Tkl%" etc. — use the standalone Int col
     if int_col is not None and "challenge" in int_col.lower():
@@ -397,6 +405,9 @@ def _extract_defense(
                 if "tkl" not in c_lower and "challenge" not in c_lower:
                     int_col = c
                     break
+    # Additional fallback: TklW (tackles won) as proxy for total tackles
+    # FBref's automated-browser responses have TklW populated but not Tkl
+    tklw_col = _find_col(cols, "tklw") if tkl_int_col is None else None
 
     blocks_col = _find_col(cols, "blocks", "blocks") or _find_col(cols, "blocks")
     # Avoid the sub-columns Blocks_Sh, Blocks_Pass — prefer Blocks_Blocks
@@ -406,6 +417,10 @@ def _extract_defense(
             if c.lower().endswith("blocks_blocks") or c.lower() == "blocks_blocks":
                 blocks_col = c
                 break
+    # Verify blocks column has numeric data
+    if blocks_col is not None:
+        if pd.to_numeric(df[blocks_col], errors="coerce").notna().mean() < 0.1:
+            blocks_col = None
 
     if player_col is None:
         return
@@ -434,6 +449,13 @@ def _extract_defense(
                 result[code]["prev_tkl_int_per90"] = float(
                     (tkl_val + int_val) / nineties_val
                 )
+        elif int_col is not None and nineties_col is not None:
+            # Fallback: use TklW (tackles won) + Int, or just Int if TklW unavailable
+            int_val = pd.to_numeric(row.get(int_col), errors="coerce")
+            tklw_val = pd.to_numeric(row.get(tklw_col), errors="coerce") if tklw_col else np.nan
+            if pd.notna(int_val) and pd.notna(nineties_val) and nineties_val >= 1.0:
+                combined = int_val + (tklw_val if pd.notna(tklw_val) else 0.0)
+                result[code]["prev_tkl_int_per90"] = float(combined / nineties_val)
 
         # Blocks per 90
         if blocks_col is not None and nineties_col is not None:
@@ -495,6 +517,221 @@ def _empty_df(codes: list[int], feature_cols: list[str]) -> pd.DataFrame:
 
 
 # -------------------------------------------------------------------------
+# FotMob features (fallback for missing FBref passing/defense data)
+# -------------------------------------------------------------------------
+
+# FotMob feature columns that can fill FBref gaps
+_FOTMOB_FALLBACK_COLS = ["prev_pass_cmp_pct", "prev_blocks_per90", "prev_prog_dist_per90"]
+
+
+def _build_fotmob_name_index(
+    data_dir: Path,
+    id_resolver: IDResolver,
+    codes: list[int],
+) -> dict[str, int]:
+    """Build a rich normalized-name -> code mapping for FotMob matching.
+
+    FotMob uses display names like "Ruben Dias", "Ben White", "Rodri"
+    while our ID map has legal names ("Ruben dos Santos Gato Alves Dias",
+    "Benjamin White") and web_names ("Rúben", "White").  We index by
+    multiple name variants to maximise match rate.
+    """
+    name_to_code: dict[str, int] = {}
+
+    # Read master ID map directly for first_name / second_name / web_name
+    map_path = data_dir / "id_maps" / "master_id_map.csv"
+    code_set = set(codes)
+    try:
+        id_df = pd.read_csv(map_path, encoding="utf-8")
+        id_df.columns = [c.strip() for c in id_df.columns]
+    except Exception:
+        id_df = pd.DataFrame()
+
+    for _, row in id_df.iterrows():
+        code = int(row.get("code", -1))
+        if code not in code_set:
+            continue
+
+        first = str(row.get("first_name", "")).strip()
+        second = str(row.get("second_name", "")).strip()
+        web = str(row.get("web_name", "")).strip()
+        if first == "nan":
+            first = ""
+        if second == "nan":
+            second = ""
+        if web == "nan":
+            web = ""
+
+        # Variant 1: full legal name ("Ruben dos Santos Gato Alves Dias")
+        if first and second:
+            name_to_code.setdefault(_normalize_name(f"{first} {second}"), code)
+
+        # Variant 2: web_name ("Rúben", "Salah", "Rodri")
+        if web:
+            name_to_code.setdefault(_normalize_name(web), code)
+
+        # Variant 3: first_name + web_name ("Ben White" → first="Benjamin" web="White")
+        if first and web and web != first:
+            name_to_code.setdefault(_normalize_name(f"{first} {web}"), code)
+
+        # Variant 4: first_name alone (catches single-name players like "Rodri")
+        if first:
+            name_to_code.setdefault(_normalize_name(first), code)
+
+        # Variant 5: second_name alone
+        if second and second != first:
+            name_to_code.setdefault(_normalize_name(second), code)
+
+        # Variant 6: first_name + last token of second_name
+        #   "Bruno" + "Borges Fernandes" → "bruno fernandes"
+        #   "Thiago" + "Emiliano da Silva" → "thiago silva"
+        if first and second and " " in second:
+            last_token = second.split()[-1]
+            name_to_code.setdefault(
+                _normalize_name(f"{first} {last_token}"), code,
+            )
+
+        # Variant 7: extract nickname from first_name if present
+        #   "Rodrigo 'Rodri'" → "rodri"
+        if first and "'" in first:
+            import re
+            nick = re.search(r"'([^']+)'", first)
+            if nick:
+                name_to_code.setdefault(_normalize_name(nick.group(1)), code)
+
+    # Also add from id_resolver as fallback
+    for code in codes:
+        full_name = id_resolver.player_full_name(code)
+        if full_name:
+            name_to_code.setdefault(_normalize_name(full_name), code)
+        pname = id_resolver.player_name(code)
+        if pname and pname != "Unknown":
+            name_to_code.setdefault(_normalize_name(pname), code)
+
+    return name_to_code
+
+
+def _load_fotmob_features(
+    data_dir: Path,
+    prev_season: str,
+    id_resolver: IDResolver,
+    codes: list[int],
+) -> pd.DataFrame:
+    """Load FotMob JSON for *prev_season* and extract 3 features.
+
+    Returns a DataFrame with columns (code, prev_pass_cmp_pct,
+    prev_blocks_per90, prev_prog_dist_per90).
+    """
+    json_path = data_dir / "fotmob" / f"{prev_season}.json"
+
+    if not json_path.exists():
+        logger.warning("FotMob file not found: %s", json_path)
+        return _empty_df(codes, _FOTMOB_FALLBACK_COLS)
+
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            season_data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read FotMob data: %s", exc)
+        return _empty_df(codes, _FOTMOB_FALLBACK_COLS)
+
+    name_to_code = _build_fotmob_name_index(data_dir, id_resolver, codes)
+    prefix_idx = _build_prefix_index(name_to_code)
+
+    result: dict[int, dict] = {code: {"code": code} for code in codes}
+
+    # --- accurate_pass: SubStatValue = pass completion % ---
+    for entry in season_data.get("accurate_pass", []):
+        code = _match_fotmob_name(entry.get("player_name", ""), name_to_code, prefix_idx)
+        if code is not None and code in result:
+            try:
+                # SubStatValue contains the completion percentage (e.g. "82%")
+                raw = str(entry.get("sub_stat_value", ""))
+                val = float(raw.replace("%", "").strip())
+                result[code]["prev_pass_cmp_pct"] = val
+            except (ValueError, TypeError):
+                pass
+
+    # --- outfielder_block: StatValue = blocks per 90 ---
+    for entry in season_data.get("outfielder_block", []):
+        code = _match_fotmob_name(entry.get("player_name", ""), name_to_code, prefix_idx)
+        if code is not None and code in result:
+            try:
+                val = float(entry.get("stat_value", ""))
+                result[code]["prev_blocks_per90"] = val
+            except (ValueError, TypeError):
+                pass
+
+    # --- accurate_long_balls: StatValue = long balls per 90 (proxy) ---
+    for entry in season_data.get("accurate_long_balls", []):
+        code = _match_fotmob_name(entry.get("player_name", ""), name_to_code, prefix_idx)
+        if code is not None and code in result:
+            try:
+                val = float(entry.get("stat_value", ""))
+                result[code]["prev_prog_dist_per90"] = val
+            except (ValueError, TypeError):
+                pass
+
+    df = pd.DataFrame(list(result.values()))
+    for col in _FOTMOB_FALLBACK_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[["code"] + _FOTMOB_FALLBACK_COLS]
+
+
+def _match_fotmob_name(
+    name: str,
+    name_to_code: dict[str, int],
+    _prefix_index: dict[str, int] | None = None,
+) -> int | None:
+    """Match a FotMob player name to a code via normalized name lookup.
+
+    Falls back to prefix matching for shortened first names
+    (e.g. "Ben White" → "Benjamin White").
+    """
+    if not name:
+        return None
+
+    norm = _normalize_name(name)
+
+    # Exact match first
+    code = name_to_code.get(norm)
+    if code is not None:
+        return code
+
+    # Prefix match: for "ben white", check if any key starts with "ben"
+    # and ends with " white". Only used for multi-word names.
+    parts = norm.split()
+    if len(parts) >= 2 and _prefix_index is not None:
+        last = parts[-1]
+        code = _prefix_index.get(norm)
+        if code is not None:
+            return code
+
+    return None
+
+
+def _build_prefix_index(name_to_code: dict[str, int]) -> dict[str, int]:
+    """Build a prefix-based index for fuzzy first-name matching.
+
+    Maps "shortened_first last" → code by generating shortened variants
+    of multi-word keys. E.g. "benjamin white" generates "ben white",
+    "benj white", "benja white", etc.
+    """
+    prefix_idx: dict[str, int] = {}
+    for full_key, code in name_to_code.items():
+        parts = full_key.split()
+        if len(parts) >= 2:
+            first = parts[0]
+            rest = " ".join(parts[1:])
+            # Generate prefixes of length 3..len(first)-1
+            for length in range(3, len(first)):
+                short_key = f"{first[:length]} {rest}"
+                prefix_idx.setdefault(short_key, code)
+    return prefix_idx
+
+
+# -------------------------------------------------------------------------
 # Public API
 # -------------------------------------------------------------------------
 
@@ -509,8 +746,8 @@ def compute_prior_season_features(
     Parameters
     ----------
     data_dir : Path
-        Root data directory containing ``understat/league/`` and ``fbref/``
-        sub-directories.
+        Root data directory containing ``understat/league/``, ``fbref/``,
+        and ``fotmob/`` sub-directories.
     season : str
         The target season (e.g. ``"2023-24"``). Features are drawn from
         the previous season ``S-1``.
@@ -530,12 +767,20 @@ def compute_prior_season_features(
         logger.info("No prior season for %s — returning all NaN.", season)
         return _empty_df(codes, PRIOR_FEATURE_COLUMNS)
 
-    # Load features from both sources
+    # Load features from all sources
     us_df = _load_understat_features(data_dir, prev, id_resolver, codes)
     fb_df = _load_fbref_features(data_dir, prev, id_resolver, codes)
+    fm_df = _load_fotmob_features(data_dir, prev, id_resolver, codes)
 
     # Merge on code
     merged = us_df.merge(fb_df, on="code", how="outer")
+
+    # Use FotMob as fallback — only fill where FBref has NaN
+    for col in _FOTMOB_FALLBACK_COLS:
+        if col in merged.columns:
+            fm_vals = fm_df.set_index("code")[col]
+            mask = merged[col].isna()
+            merged.loc[mask, col] = merged.loc[mask, "code"].map(fm_vals)
 
     # Ensure all expected columns exist
     for col in PRIOR_FEATURE_COLUMNS:

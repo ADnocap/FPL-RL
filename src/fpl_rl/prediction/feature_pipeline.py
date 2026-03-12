@@ -132,7 +132,11 @@ class FeaturePipeline:
         # Ensure numeric types
         for col in ["element", "GW", "total_points", "minutes", "value",
                      "goals_scored", "assists", "clean_sheets", "bonus", "bps",
-                     "goals_conceded", "selected"]:
+                     "goals_conceded", "selected",
+                     "saves", "yellow_cards", "red_cards", "starts",
+                     "expected_goals", "expected_assists",
+                     "expected_goal_involvements", "expected_goals_conceded",
+                     "transfers_balance"]:
             if col in merged_gw.columns:
                 merged_gw[col] = pd.to_numeric(merged_gw[col], errors="coerce")
 
@@ -228,10 +232,34 @@ class FeaturePipeline:
             how="left",
         )
 
+        # Add derived interaction features
+        result = self._add_derived_features(result)
+
         # Add season column
         result["season"] = season
 
         return result
+
+    @staticmethod
+    def _add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Add derived interaction features from existing rolling features."""
+        eps = 1e-6
+        # Points per minute efficiency
+        if "pts_rolling_5" in df.columns and "mins_rolling_5" in df.columns:
+            df["pts_per_min_5"] = df["pts_rolling_5"] / (df["mins_rolling_5"] + eps)
+        # Form momentum (short vs long rolling delta)
+        if "pts_rolling_3" in df.columns and "pts_rolling_10" in df.columns:
+            df["pts_form_delta"] = df["pts_rolling_3"] - df["pts_rolling_10"]
+        # xG overperformance (goals per match vs xG per match)
+        if "goals_rolling_5" in df.columns and "xg_rolling_5" in df.columns:
+            df["goals_vs_xg_5"] = (df["goals_rolling_5"] / 5.0) - df["xg_rolling_5"]
+        # xA overperformance (assists per match vs xA per match)
+        if "assists_rolling_5" in df.columns and "xa_rolling_5" in df.columns:
+            df["assists_vs_xa_5"] = (df["assists_rolling_5"] / 5.0) - df["xa_rolling_5"]
+        # Seasonal position (captures early-season rotation, end-of-season patterns)
+        if "GW" in df.columns:
+            df["gw_phase"] = df["GW"] / 38.0
+        return df
 
     def _extract_gw_dates(self, merged_gw: pd.DataFrame) -> pd.Series:
         """Extract earliest kickoff_time per GW as a Series indexed by GW."""

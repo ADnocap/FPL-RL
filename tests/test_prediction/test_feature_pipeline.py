@@ -188,3 +188,39 @@ class TestFeaturePipeline:
 
         gw1 = df[df["GW"] == 1]
         assert gw1["pts_rolling_3"].isna().all()
+
+
+class TestDerivedFeatures:
+    """Test derived interaction features added by _add_derived_features()."""
+
+    def test_derived_columns_exist(self, pipeline_data_dir: Path) -> None:
+        """Derived features should be present in the output."""
+        resolver = IDResolver(pipeline_data_dir)
+        pipeline = FeaturePipeline(pipeline_data_dir, resolver, ["2023-24"])
+        df = pipeline.build()
+
+        for col in ["pts_per_min_5", "pts_form_delta", "gw_phase"]:
+            assert col in df.columns, f"Missing derived column: {col}"
+
+    def test_gw_phase_values(self, pipeline_data_dir: Path) -> None:
+        """gw_phase should be GW / 38."""
+        resolver = IDResolver(pipeline_data_dir)
+        pipeline = FeaturePipeline(pipeline_data_dir, resolver, ["2023-24"])
+        df = pipeline.build()
+
+        gw1 = df[df["GW"] == 1].iloc[0]
+        assert gw1["gw_phase"] == pytest.approx(1 / 38.0)
+
+        gw3 = df[df["GW"] == 3].iloc[0]
+        assert gw3["gw_phase"] == pytest.approx(3 / 38.0)
+
+    def test_pts_form_delta(self, pipeline_data_dir: Path) -> None:
+        """pts_form_delta = pts_rolling_3 - pts_rolling_10."""
+        resolver = IDResolver(pipeline_data_dir)
+        pipeline = FeaturePipeline(pipeline_data_dir, resolver, ["2023-24"])
+        df = pipeline.build()
+
+        # At GW3, both pts_rolling_3 and pts_rolling_10 should exist
+        gw3 = df[(df["GW"] == 3) & (df["code"] == 100)].iloc[0]
+        expected = gw3["pts_rolling_3"] - gw3["pts_rolling_10"]
+        assert gw3["pts_form_delta"] == pytest.approx(expected)

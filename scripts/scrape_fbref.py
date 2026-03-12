@@ -170,9 +170,10 @@ def _extract_from_page_source(driver, stat_type: str) -> pd.DataFrame | None:
 
 
 def _validate_stat_columns(df: pd.DataFrame, stat_type: str) -> bool:
-    """Check that stat-specific columns have >50% non-null values.
+    """Check that stat-specific columns have >50% numeric (non-null) values.
 
-    Returns True if the DataFrame passes validation.
+    Returns True if the DataFrame passes validation. Checks that values are
+    actually numeric, not just non-null strings like "None" or repeated headers.
     """
     check_frags = STAT_VALIDATION_COLS.get(stat_type, [])
     if not check_frags:
@@ -185,8 +186,10 @@ def _validate_stat_columns(df: pd.DataFrame, stat_type: str) -> bool:
         matching = [c for c in cols if frag.lower() in c.lower()]
         for mc in matching:
             found_any = True
-            non_null_frac = df[mc].notna().mean()
-            if non_null_frac > 0.5:
+            # Convert to numeric to filter out string "None" and header text
+            numeric_col = pd.to_numeric(df[mc], errors="coerce")
+            numeric_frac = numeric_col.notna().mean()
+            if numeric_frac > 0.5:
                 return True
 
     if not found_any:
@@ -198,7 +201,7 @@ def _validate_stat_columns(df: pd.DataFrame, stat_type: str) -> bool:
         return False
 
     logger.warning(
-        "Validation failed for %s: all stat columns have <=50%% non-null values",
+        "Validation failed for %s: all stat columns have <=50%% numeric values",
         stat_type,
     )
     return False

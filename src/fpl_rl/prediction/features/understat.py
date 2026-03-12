@@ -46,9 +46,14 @@ _ROLLING_SPECS: list[tuple[str, str, int]] = [
     ("shots_rolling_5", "shots", 5),
     # Key passes
     ("key_passes_rolling_5", "key_passes", 5),
+    # xGChain (value created through pass sequences, broader than xA)
+    ("xgchain_rolling_5", "xGChain", 5),
+    ("xgchain_rolling_10", "xGChain", 10),
+    # xGBuildup (progressive play excluding terminal actions)
+    ("xgbuildup_rolling_5", "xGBuildup", 5),
 ]
 
-# All 10 output feature columns
+# All output feature columns
 FEATURE_COLUMNS: list[str] = [spec[0] for spec in _ROLLING_SPECS]
 
 
@@ -56,13 +61,16 @@ def _load_player_matches(json_path: Path) -> pd.DataFrame:
     """Load and parse a single player's understat JSON file.
 
     Returns a DataFrame with columns: date, xG, xA, npxG, shots, key_passes,
-    sorted by date ascending. Numeric fields are cast from strings to float.
+    xGChain, xGBuildup, sorted by date ascending. Numeric fields are cast
+    from strings to float.
     """
     with open(json_path, encoding="utf-8") as f:
         matches = json.load(f)
 
+    _COLS = ["date", "xG", "xA", "npxG", "shots", "key_passes", "xGChain", "xGBuildup"]
+
     if not matches:
-        return pd.DataFrame(columns=["date", "xG", "xA", "npxG", "shots", "key_passes"])
+        return pd.DataFrame(columns=_COLS)
 
     df = pd.DataFrame(matches)
 
@@ -70,10 +78,13 @@ def _load_player_matches(json_path: Path) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=False)
 
     # Cast numeric columns from string to float
-    for col in ("xG", "xA", "npxG", "shots", "key_passes"):
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    for col in ("xG", "xA", "npxG", "shots", "key_passes", "xGChain", "xGBuildup"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        else:
+            df[col] = 0.0
 
-    df = df[["date", "xG", "xA", "npxG", "shots", "key_passes"]].copy()
+    df = df[_COLS].copy()
     df = df.sort_values("date").reset_index(drop=True)
 
     return df
@@ -85,7 +96,7 @@ def compute_understat_features(
     id_resolver: IDResolver,
     gw_dates: pd.Series,
 ) -> pd.DataFrame:
-    """Compute 10 rolling features from understat per-match data.
+    """Compute rolling features from understat per-match data.
 
     Parameters
     ----------
@@ -103,7 +114,7 @@ def compute_understat_features(
     Returns
     -------
     pd.DataFrame
-        Columns: ``code``, ``GW``, plus the 10 feature columns from
+        Columns: ``code``, ``GW``, plus the feature columns from
         :data:`FEATURE_COLUMNS`. One row per (code, GW) for each player
         that has an understat mapping, even if all features are NaN.
     """

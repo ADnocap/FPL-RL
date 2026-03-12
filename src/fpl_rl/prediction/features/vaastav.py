@@ -49,12 +49,32 @@ _ROLLING_SPECS: list[tuple[str, str, int, str]] = [
     ("influence_rolling_5", "influence", 5, "mean"),
     ("creativity_rolling_5", "creativity", 5, "mean"),
     ("threat_rolling_5", "threat", 5, "mean"),
+    # Saves (GK points source)
+    ("saves_rolling_5", "saves", 5, "mean"),
+    # Goals conceded (DEF/GK clean sheet proxy)
+    ("goals_conceded_rolling_5", "goals_conceded", 5, "mean"),
+    # Transfers balance (crowd wisdom)
+    ("transfers_balance_rolling_3", "transfers_balance", 3, "mean"),
+    # Discipline
+    ("yellows_rolling_5", "yellow_cards", 5, "sum"),
+    ("reds_rolling_10", "red_cards", 10, "sum"),
+    # Starts (rotation signal, 2022-23+ only)
+    ("starts_rolling_5", "starts", 5, "mean"),
+    # FPL expected stats (2022-23+ only)
+    ("fpl_xg_rolling_5", "expected_goals", 5, "mean"),
+    ("fpl_xa_rolling_5", "expected_assists", 5, "mean"),
+    ("fpl_xgi_rolling_5", "expected_goal_involvements", 5, "mean"),
+    ("fpl_xgc_rolling_5", "expected_goals_conceded", 5, "mean"),
 ]
 
 # Columns that get summed during DGW aggregation
 _NUMERIC_SUM_COLS = [
     "total_points", "minutes", "goals_scored", "assists",
     "clean_sheets", "bonus", "bps",
+    "saves", "goals_conceded", "yellow_cards", "red_cards",
+    "starts", "expected_goals", "expected_assists",
+    "expected_goal_involvements", "expected_goals_conceded",
+    "transfers_balance",
 ]
 
 # Columns that are floats in the raw data and get summed during DGW agg
@@ -63,7 +83,7 @@ _FLOAT_SUM_COLS = ["influence", "creativity", "threat", "ict_index"]
 # Columns taken from the last row in a DGW group (known before deadline)
 _LAST_COLS = ["value", "selected"]
 
-# All 27 output feature columns
+# All output feature columns (rolling specs + expanding + non-rolling)
 FEATURE_COLUMNS: list[str] = (
     [spec[0] for spec in _ROLLING_SPECS]
     + ["season_avg_pts", "season_total_mins", "games_played",
@@ -72,7 +92,7 @@ FEATURE_COLUMNS: list[str] = (
 
 
 def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
-    """Compute 27 rolling features from merged_gw data.
+    """Compute rolling features from merged_gw data.
 
     Parameters
     ----------
@@ -87,7 +107,7 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
     -------
     pd.DataFrame
         One row per (element, GW) with columns ``element``, ``GW``,
-        and the 27 feature columns listed in :data:`FEATURE_COLUMNS`.
+        and the feature columns listed in :data:`FEATURE_COLUMNS`.
     """
     df = merged_gw.copy()
 
@@ -130,6 +150,12 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
 
     # Compute each rolling feature (per-group to avoid cross-player contamination)
     for out_col, src_col, window, agg in _ROLLING_SPECS:
+        # Guard: if source column doesn't exist (e.g. newer-season-only columns),
+        # set output to NaN and skip
+        if src_col not in df.columns:
+            df[out_col] = float("nan")
+            continue
+
         shifted = _get_shifted(src_col)
         if agg == "mean":
             df[out_col] = shifted.groupby(df["element"]).transform(

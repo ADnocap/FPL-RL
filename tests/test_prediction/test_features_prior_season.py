@@ -453,3 +453,198 @@ class TestOutputFormat:
         assert PREV_SEASON["2024-25"] == "2023-24"
         assert PREV_SEASON["2017-18"] == "2016-17"
         assert "2016-17" not in PREV_SEASON
+
+
+# -------------------------------------------------------------------------
+# FotMob features
+# -------------------------------------------------------------------------
+
+
+def _make_fotmob_json(
+    data_dir: Path, season: str, data: dict[str, list[dict]]
+) -> None:
+    """Write a synthetic FotMob JSON file."""
+    fotmob_dir = data_dir / "fotmob"
+    fotmob_dir.mkdir(parents=True, exist_ok=True)
+    with open(fotmob_dir / f"{season}.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+class TestFotMobFeatures:
+    """Tests for FotMob-sourced prior-season features."""
+
+    def test_fotmob_features_from_json(self, pred_data_dir: Path) -> None:
+        """Known FotMob values produce correct features."""
+        _make_fotmob_json(
+            pred_data_dir,
+            "2019-20",
+            {
+                "accurate_pass": [
+                    {"player_name": "Harry Kane", "stat_value": "35.2", "sub_stat_value": "75.3%"},
+                    {"player_name": "Mohamed Salah", "stat_value": "42.1", "sub_stat_value": "82.0%"},
+                ],
+                "outfielder_block": [
+                    {"player_name": "Virgil van Dijk", "stat_value": "1.5"},
+                    {"player_name": "Harry Kane", "stat_value": "0.3"},
+                ],
+                "accurate_long_balls": [
+                    {"player_name": "Harry Kane", "stat_value": "2.1"},
+                    {"player_name": "Virgil van Dijk", "stat_value": "3.8"},
+                ],
+            },
+        )
+
+        resolver = IDResolver(pred_data_dir)
+        result = compute_prior_season_features(pred_data_dir, "2020-21", resolver)
+
+        # Kane (code=100): pass_cmp_pct=75.3, blocks=0.3, prog_dist=2.1
+        kane = result[result["code"] == 100].iloc[0]
+        assert kane["prev_pass_cmp_pct"] == pytest.approx(75.3)
+        assert kane["prev_blocks_per90"] == pytest.approx(0.3)
+        assert kane["prev_prog_dist_per90"] == pytest.approx(2.1)
+
+        # Salah (code=200): pass_cmp_pct=82.0
+        salah = result[result["code"] == 200].iloc[0]
+        assert salah["prev_pass_cmp_pct"] == pytest.approx(82.0)
+
+        # Van Dijk (code=300): blocks=1.5, prog_dist=3.8
+        vvd = result[result["code"] == 300].iloc[0]
+        assert vvd["prev_blocks_per90"] == pytest.approx(1.5)
+        assert vvd["prev_prog_dist_per90"] == pytest.approx(3.8)
+
+    def test_fotmob_fallback_for_missing_fbref(self, pred_data_dir: Path) -> None:
+        """FotMob fills NaN where FBref data is missing."""
+        # Create FBref shooting + standard (no passing or defense data)
+        prev_season = "2019-20"
+        shooting_df = pd.DataFrame({
+            "Unnamed: 1_level_0_Player": ["Kane"],
+            "Unnamed: 7_level_0_90s": [30.0],
+            "Standard_SoT/90": [2.0],
+        })
+        _make_fbref_parquet(pred_data_dir, prev_season, "shooting", shooting_df)
+
+        standard_df = pd.DataFrame({
+            "Unnamed: 1_level_0_Player": ["Kane"],
+            "Playing Time_90s": [30.0],
+            "Per 90 Minutes_Gls": [0.6],
+        })
+        _make_fbref_parquet(pred_data_dir, prev_season, "standard", standard_df)
+
+        # No passing/defense parquets → those FBref features will be NaN
+
+        # FotMob provides pass_cmp_pct and blocks_per90
+        _make_fotmob_json(
+            pred_data_dir,
+            prev_season,
+            {
+                "accurate_pass": [
+                    {"player_name": "Harry Kane", "stat_value": "30", "sub_stat_value": "78.5%"},
+                ],
+                "outfielder_block": [
+                    {"player_name": "Harry Kane", "stat_value": "0.4"},
+                ],
+                "accurate_long_balls": [
+                    {"player_name": "Harry Kane", "stat_value": "1.9"},
+                ],
+            },
+        )
+
+        # Also provide understat so the merge works cleanly
+        _make_understat_league(
+            pred_data_dir, prev_season,
+            [{
+                "id": "1234", "player_name": "Harry Kane",
+                "games": "30", "time": "2700", "goals": "18",
+                "xG": "15.0", "assists": "3", "xA": "6.0",
+                "shots": "120", "key_passes": "30",
+                "npg": "15", "npxG": "12.0",
+                "position": "F", "team_title": "Tottenham",
+            }],
+        )
+
+        resolver = IDResolver(pred_data_dir)
+        result = compute_prior_season_features(pred_data_dir, "2020-21", resolver)
+
+        kane = result[result["code"] == 100].iloc[0]
+        # FBref features that are present should still come from FBref
+        assert kane["prev_sot_per90"] == pytest.approx(2.0)
+        assert kane["prev_gls_per90"] == pytest.approx(0.6)
+
+        # FBref features that are missing should be filled by FotMob
+        assert kane["prev_pass_cmp_pct"] == pytest.approx(78.5)
+        assert kane["prev_blocks_per90"] == pytest.approx(0.4)
+        assert kane["prev_prog_dist_per90"] == pytest.approx(1.9)
+
+    def test_fotmob_does_not_overwrite_fbref(self, pred_data_dir: Path) -> None:
+        """When FBref has data, FotMob does not overwrite it."""
+        prev_season = "2019-20"
+
+        # FBref passing with data
+        passing_df = pd.DataFrame({
+            "Unnamed: 1_level_0_Player": ["Kane"],
+            "Unnamed: 7_level_0_90s": [30.0],
+            "Total_Cmp%": [80.0],
+            "Total_PrgDist": [3000],
+        })
+        _make_fbref_parquet(pred_data_dir, prev_season, "passing", passing_df)
+
+        # FBref defense with data
+        defense_df = pd.DataFrame({
+            "Unnamed: 1_level_0_Player": ["Kane"],
+            "Unnamed: 7_level_0_90s": [30.0],
+            "Unnamed: 21_level_0_Tkl+Int": [30],
+            "Blocks_Blocks": [15],
+        })
+        _make_fbref_parquet(pred_data_dir, prev_season, "defense", defense_df)
+
+        # FotMob with different values
+        _make_fotmob_json(
+            pred_data_dir,
+            prev_season,
+            {
+                "accurate_pass": [
+                    {"player_name": "Harry Kane", "stat_value": "30", "sub_stat_value": "99.9%"},
+                ],
+                "outfielder_block": [
+                    {"player_name": "Harry Kane", "stat_value": "9.9"},
+                ],
+                "accurate_long_balls": [
+                    {"player_name": "Harry Kane", "stat_value": "9.9"},
+                ],
+            },
+        )
+
+        resolver = IDResolver(pred_data_dir)
+        result = compute_prior_season_features(pred_data_dir, "2020-21", resolver)
+
+        kane = result[result["code"] == 100].iloc[0]
+        # FBref values should be preserved, NOT overwritten by FotMob
+        assert kane["prev_pass_cmp_pct"] == pytest.approx(80.0)
+        assert kane["prev_blocks_per90"] == pytest.approx(15 / 30.0)
+        assert kane["prev_prog_dist_per90"] == pytest.approx(3000 / 30.0)
+
+    def test_fotmob_name_matching(self, pred_data_dir: Path) -> None:
+        """Normalized names match correctly (accents, case)."""
+        _make_fotmob_json(
+            pred_data_dir,
+            "2019-20",
+            {
+                "accurate_pass": [
+                    # Different casing
+                    {"player_name": "harry kane", "stat_value": "30", "sub_stat_value": "75%"},
+                    # Full name with different order shouldn't match — but exact match should
+                    {"player_name": "Mohamed Salah", "stat_value": "40", "sub_stat_value": "82%"},
+                ],
+                "outfielder_block": [],
+                "accurate_long_balls": [],
+            },
+        )
+
+        resolver = IDResolver(pred_data_dir)
+        result = compute_prior_season_features(pred_data_dir, "2020-21", resolver)
+
+        kane = result[result["code"] == 100].iloc[0]
+        assert kane["prev_pass_cmp_pct"] == pytest.approx(75.0)
+
+        salah = result[result["code"] == 200].iloc[0]
+        assert salah["prev_pass_cmp_pct"] == pytest.approx(82.0)
