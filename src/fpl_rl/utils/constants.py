@@ -87,6 +87,7 @@ SEASON_FILES = [
     "fixtures.csv",
     "player_idlist.csv",
     "cleaned_players.csv",
+    "players_raw.csv",
 ]
 
 # Required files — download_season fails only if these are missing.

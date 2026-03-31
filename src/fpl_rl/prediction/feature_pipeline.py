@@ -15,6 +15,8 @@ from fpl_rl.prediction.features.vaastav import compute_vaastav_features
 from fpl_rl.prediction.features.understat import compute_understat_features
 from fpl_rl.prediction.features.prior_season import compute_prior_season_features
 from fpl_rl.prediction.features.opponent import compute_opponent_features
+from fpl_rl.prediction.features.odds import compute_odds_features
+from fpl_rl.prediction.features.players_raw import compute_players_raw_features
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +190,17 @@ class FeaturePipeline:
         teams_df = self._load_csv_safe(raw_dir / "teams.csv")
         opponent_df = compute_opponent_features(merged_gw, fixtures_df, teams_df)
 
-        # 7. Get position mapping from cleaned_players.csv
+        # 7. Compute odds features (Pinnacle implied probabilities)
+        odds_df = compute_odds_features(
+            self.data_dir, season, merged_gw, teams_df,
+        )
+
+        # 8. Compute players_raw features (set pieces, xP)
+        players_raw_df = compute_players_raw_features(
+            self.data_dir, season, merged_gw,
+        )
+
+        # 9. Get position mapping from cleaned_players.csv
         position_df = self._load_positions(raw_dir, merged_gw)
 
         # 8. Get target (total_points) — aggregate DGW rows
@@ -216,6 +228,14 @@ class FeaturePipeline:
         # Add opponent features (on element, GW)
         if not opponent_df.empty:
             result = result.merge(opponent_df, on=["element", "GW"], how="left")
+
+        # Add odds features (on element, GW)
+        if not odds_df.empty:
+            result = result.merge(odds_df, on=["element", "GW"], how="left")
+
+        # Add players_raw features (on element, GW)
+        if not players_raw_df.empty:
+            result = result.merge(players_raw_df, on=["element", "GW"], how="left")
 
         # Add position
         if not position_df.empty:

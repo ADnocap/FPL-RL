@@ -65,6 +65,13 @@ _ROLLING_SPECS: list[tuple[str, str, int, str]] = [
     ("fpl_xa_rolling_5", "expected_assists", 5, "mean"),
     ("fpl_xgi_rolling_5", "expected_goal_involvements", 5, "mean"),
     ("fpl_xgc_rolling_5", "expected_goals_conceded", 5, "mean"),
+    # Detailed stats from old seasons (2016-17 to 2018-19 only)
+    ("fpl_key_passes_rolling_5", "key_passes", 5, "mean"),
+    ("tackles_rolling_5", "tackles", 5, "mean"),
+    ("completed_passes_rolling_5", "completed_passes", 5, "mean"),
+    ("big_chances_created_rolling_5", "big_chances_created", 5, "mean"),
+    ("recoveries_rolling_5", "recoveries", 5, "mean"),
+    ("dribbles_rolling_5", "dribbles", 5, "mean"),
 ]
 
 # Columns that get summed during DGW aggregation
@@ -75,6 +82,9 @@ _NUMERIC_SUM_COLS = [
     "starts", "expected_goals", "expected_assists",
     "expected_goal_involvements", "expected_goals_conceded",
     "transfers_balance",
+    # Old-season detailed stats (2016-19 only, NaN for newer seasons)
+    "key_passes", "tackles", "completed_passes",
+    "big_chances_created", "recoveries", "dribbles",
 ]
 
 # Columns that are floats in the raw data and get summed during DGW agg
