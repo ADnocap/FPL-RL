@@ -35,28 +35,37 @@ class FPLGameEngine:
         self.loader = loader
         self._team_map = loader._team_map
 
-    def step(self, state: GameState, action: EngineAction) -> tuple[GameState, StepResult]:
-        """Process one gameweek.
+    def step(
+        self,
+        state: GameState,
+        action: EngineAction,
+        *,
+        preseason: bool = False,
+    ) -> tuple[GameState, StepResult]:
+        """Process one gameweek (or a pre-season squad-building step).
 
-        Steps:
+        When preseason=True, only transfers/captain/lineup/selling prices are
+        applied. No scoring, auto-subs, FT banking, chip handling, or GW
+        advance occurs. Returns a zeroed StepResult.
+
+        Steps (normal mode):
         1. Activate chip (if any)
         2. Apply transfers
         3. Set captain/vice-captain
         4. Set lineup/bench (if specified)
         5. Update selling prices
-        6. Look up historical points for all squad members
-        7. Resolve captain failover & calculate captain bonus
-        8. Perform auto-substitution
-        9. Calculate total GW points (incl. bench boost, hits)
-        10. Update free transfers for next GW
-        11. Handle Free Hit revert
-        12. Handle GW19 chip expiry
-        13. Advance to next GW
+        6. Perform auto-substitution
+        7. Calculate points with captain logic
+        8. Calculate total GW points (incl. bench boost, hits)
+        9. Update free transfers for next GW
+        10. Handle Free Hit revert
+        11. Handle GW19 chip expiry
+        12. Advance to next GW
         """
         gw = state.current_gw
 
-        # 1. Activate chip
-        if action.chip is not None:
+        # 1. Activate chip (skip during pre-season)
+        if action.chip is not None and not preseason:
             state = activate_chip(state, action.chip)
         else:
             state = state.copy()
@@ -103,6 +112,14 @@ class FPLGameEngine:
 
         # 5. Update selling prices
         state.squad = update_selling_prices(state.squad, self.loader, gw)
+
+        # --- Pre-season early return: no scoring, no GW advance ---
+        if preseason:
+            return state, StepResult(
+                gw_points=0, hit_cost=0, net_points=0,
+                captain_points=0, bench_points=0,
+                auto_subs=[], captain_failover=False,
+            )
 
         # 6. Auto-substitution (before captain calc — captain bonus
         # must reflect the final, post-sub lineup)

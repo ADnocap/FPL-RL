@@ -323,10 +323,13 @@ class ActionEncoder:
 
         return lineup_eids, bench_eids
 
-    def get_action_mask(self, state: GameState) -> np.ndarray:
+    def get_action_mask(
+        self, state: GameState, *, preseason: bool = False,
+    ) -> np.ndarray:
         """Build a flat boolean mask for MaskablePPO.
 
         Conservative per-dimension masks. Combined validation happens in decode().
+        When preseason=True, all chips are masked (no chip use before season).
         """
         mask = np.ones(MASK_LENGTH, dtype=bool)
         offset = 0
@@ -375,15 +378,19 @@ class ActionEncoder:
                     mask[offset + i] = False
             offset += SQUAD_DIM
 
-        # chip: mask unavailable chips
+        # chip: mask unavailable chips (all masked during pre-season)
         for i in range(CHIP_DIM):
-            chip_name = CHIP_INDEX_MAP.get(i)
-            if chip_name is None:
-                if i == 5:  # reserved slot
+            if preseason:
+                if i != 0:  # only allow "no chip" during pre-season
                     mask[offset + i] = False
             else:
-                if not state.chips.is_available(chip_name, state.current_gw):
-                    mask[offset + i] = False
+                chip_name = CHIP_INDEX_MAP.get(i)
+                if chip_name is None:
+                    if i == 5:  # reserved slot
+                        mask[offset + i] = False
+                else:
+                    if not state.chips.is_available(chip_name, state.current_gw):
+                        mask[offset + i] = False
         # Always allow chip=0 (none)
 
         return mask

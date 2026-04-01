@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from fpl_rl.env.action_space import ACTION_DIMS, MAX_TRANSFERS_PER_STEP
+from fpl_rl.env.fpl_env import PRESEASON_STEPS
 
 
 def _noop_action() -> np.ndarray:
@@ -65,6 +66,7 @@ def env(test_data_dir):
     env.observation_space = create_observation_space()
     env.state = None
     env._num_gws = min(env.loader.get_num_gameweeks(), 38)
+    env._preseason_steps_remaining = 0
     env.np_random = np.random.default_rng(42)
     env.metadata = {"render_modes": ["human"], "name": "FPLEnv-v0"}
 
@@ -72,62 +74,50 @@ def env(test_data_dir):
 
 
 class TestNoOpReplay:
-    """Full season replay with no-op agent (no transfers)."""
-
     def test_noop_full_season(self, env):
         obs, info = env.reset(seed=42)
 
-        total_points = 0
-        gws_played = 0
-
+        steps = 0
         while True:
             action = _noop_action()
             obs, reward, terminated, truncated, info = env.step(action)
-            gws_played += 1
+            steps += 1
 
-            assert not np.isnan(obs).any(), f"NaN in obs at GW{gws_played}"
-            assert not np.isinf(obs).any(), f"Inf in obs at GW{gws_played}"
+            assert not np.isnan(obs).any(), f"NaN in obs at step {steps}"
+            assert not np.isinf(obs).any(), f"Inf in obs at step {steps}"
             assert env.observation_space.contains(obs)
 
             if terminated or truncated:
                 break
 
-        assert gws_played == env._num_gws
+        assert steps == PRESEASON_STEPS + env._num_gws
         assert env.state.total_points != 0
 
 
 class TestRandomActions:
-    """Random valid actions for full season without crashes."""
-
     def test_random_actions_full_season(self, env):
         obs, info = env.reset(seed=42)
-        rng = np.random.default_rng(123)
 
-        gws_played = 0
-
+        steps = 0
         while True:
-            # Sample random action
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
-            gws_played += 1
+            steps += 1
 
-            assert not np.isnan(obs).any(), f"NaN in obs at GW{gws_played}"
+            assert not np.isnan(obs).any(), f"NaN in obs at step {steps}"
             assert env.observation_space.contains(obs)
 
             if terminated or truncated:
                 break
 
-        assert gws_played == env._num_gws
+        assert steps == PRESEASON_STEPS + env._num_gws
 
     def test_masked_random_actions(self, env):
-        """Use action masks to filter random actions."""
         obs, info = env.reset(seed=42)
 
-        gws_played = 0
-
+        steps = 0
         while True:
             masks = env.action_masks()
-            # Sample from masked action space
             action = np.zeros(len(env.action_space.nvec), dtype=int)
             offset = 0
             for i, dim_size in enumerate(env.action_space.nvec):
@@ -138,28 +128,28 @@ class TestRandomActions:
                 offset += dim_size
 
             obs, reward, terminated, truncated, info = env.step(action)
-            gws_played += 1
+            steps += 1
 
             if terminated or truncated:
                 break
 
-        assert gws_played == env._num_gws
+        assert steps == PRESEASON_STEPS + env._num_gws
 
 
 class TestMultipleResets:
-    """Test resetting the environment multiple times."""
-
     def test_multiple_resets(self, env):
         for seed in [42, 123, 456]:
             obs1, _ = env.reset(seed=seed)
             assert env.state.current_gw == 1
             assert env.state.total_points == 0
+            assert env._preseason_steps_remaining == PRESEASON_STEPS
 
-            # Take one step
+            # Take one step (preseason — GW should NOT advance)
             action = _noop_action()
             env.step(action)
-            assert env.state.current_gw == 2
+            assert env.state.current_gw == 1  # still preseason
 
             # Reset again
             obs2, _ = env.reset(seed=seed)
             assert env.state.current_gw == 1
+            assert env._preseason_steps_remaining == PRESEASON_STEPS

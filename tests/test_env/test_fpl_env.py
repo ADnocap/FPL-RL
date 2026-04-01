@@ -3,14 +3,13 @@
 import numpy as np
 import pytest
 
-from fpl_rl.env.action_space import ACTION_DIMS, MAX_TRANSFERS_PER_STEP
-from fpl_rl.env.fpl_env import FPLEnv
+from fpl_rl.env.action_space import ACTION_DIMS, CHIP_DIM, MASK_LENGTH, MAX_TRANSFERS_PER_STEP
+from fpl_rl.env.fpl_env import FPLEnv, PRESEASON_STEPS
 
 
 def _noop_action() -> np.ndarray:
     """Build a no-op action (0 transfers, keep captain/vice/formation)."""
     a = np.zeros(len(ACTION_DIMS), dtype=int)
-    # captain=0, vice=1 (indices into squad — will be lineup players)
     base = 1 + MAX_TRANSFERS_PER_STEP * 2  # 11
     a[base] = 0       # captain
     a[base + 1] = 1   # vice
@@ -27,12 +26,10 @@ def env(test_data_dir):
     """Create an FPLEnv with test data."""
     from fpl_rl.data.loader import SeasonDataLoader
 
-    # Patch the env to use test data
     env = FPLEnv.__new__(FPLEnv)
     env.season = "test-season"
     env.render_mode = None
 
-    # Create loader from test data (bypass download)
     original_init = SeasonDataLoader.__init__
 
     def patched_init(self, season, data_dir):
@@ -69,6 +66,7 @@ def env(test_data_dir):
     env.observation_space = create_observation_space()
     env.state = None
     env._num_gws = min(env.loader.get_num_gameweeks(), 38)
+    env._preseason_steps_remaining = 0
     env.np_random = np.random.default_rng(42)
     env.metadata = {"render_modes": ["human"], "name": "FPLEnv-v0"}
 
@@ -98,9 +96,92 @@ class TestFPLEnvReset:
         assert env.observation_space.contains(obs)
 
     def test_reset_gw1_has_many_free_transfers(self, env):
-        """GW1 should have enough FTs for initial squad reshaping."""
         env.reset(seed=42)
         assert env.state.free_transfers >= 5
+
+    def test_reset_initializes_preseason(self, env):
+        env.reset(seed=42)
+        assert env._preseason_steps_remaining == PRESEASON_STEPS
+
+
+class TestFPLEnvPreseason:
+    """Pre-season steps: squad building before GW1."""
+
+    def test_preseason_no_gw_advance(self, env):
+        env.reset(seed=42)
+        action = _noop_action()
+
+        # Both preseason steps should keep current_gw = 1
+        for i in range(PRESEASON_STEPS):
+            obs, reward, term, trunc, info = env.step(action)
+            assert env.state.current_gw == 1, f"GW advanced during preseason step {i+1}"
+            assert info["preseason"] is True
+            assert info["gw"] == 0
+            assert reward == 0.0
+            assert not term
+
+    def test_preseason_then_real_gw1(self, env):
+        env.reset(seed=42)
+        action = _noop_action()
+
+        # Skip preseason steps
+        for _ in range(PRESEASON_STEPS):
+            env.step(action)
+
+        # Next step should be real GW1
+        obs, reward, term, trunc, info = env.step(action)
+        assert info["preseason"] is False
+        assert info["gw"] == 1
+        assert env.state.current_gw == 2  # advanced to GW2
+
+    def test_preseason_ft_consumed(self, env):
+        """Free transfers consumed during preseason but not banked."""
+        env.reset(seed=42)
+        initial_ft = env.state.free_transfers  # 15
+
+        # No-op = 0 transfers → FT unchanged
+        action = _noop_action()
+        env.step(action)
+        assert env.state.free_transfers == initial_ft
+
+    def test_preseason_chips_masked(self, env):
+        env.reset(seed=42)
+        masks = env.action_masks()
+
+        # Chip dimension is the last CHIP_DIM values
+        chip_offset = MASK_LENGTH - CHIP_DIM
+        assert masks[chip_offset] == True  # chip=none always allowed
+        for i in range(1, CHIP_DIM):
+            assert masks[chip_offset + i] == False, (
+                f"Chip index {i} should be masked during preseason"
+            )
+
+    def test_gw1_resets_ft_to_one(self, env):
+        """After all preseason + GW1 step, FTs reset to 1."""
+        env.reset(seed=42)
+        action = _noop_action()
+
+        # Preseason steps
+        for _ in range(PRESEASON_STEPS):
+            env.step(action)
+
+        # Real GW1
+        env.step(action)
+
+        from fpl_rl.utils.constants import INITIAL_FREE_TRANSFERS
+        assert env.state.free_transfers == INITIAL_FREE_TRANSFERS
+
+    def test_episode_length(self, env):
+        """Episode = PRESEASON_STEPS + num_gws steps."""
+        env.reset(seed=42)
+        steps = 0
+        while True:
+            obs, reward, term, trunc, info = env.step(_noop_action())
+            steps += 1
+            if term or trunc:
+                break
+
+        assert steps == PRESEASON_STEPS + env._num_gws
 
 
 class TestFPLEnvStep:
@@ -112,52 +193,53 @@ class TestFPLEnvStep:
         assert len(result) == 5
         obs, reward, terminated, truncated, info = result
         assert obs.shape == env.observation_space.shape
-        assert isinstance(reward, float)
+        assert isinstance(reward, (int, float))
         assert isinstance(terminated, bool)
         assert isinstance(truncated, bool)
         assert isinstance(info, dict)
 
-    def test_step_advances_gw(self, env):
+    def test_step_advances_gw_after_preseason(self, env):
         env.reset(seed=42)
         action = env.action_space.sample()
-        env.step(action)
 
+        # Skip preseason
+        for _ in range(PRESEASON_STEPS):
+            env.step(action)
+
+        # Real GW1 step should advance
+        env.step(action)
         assert env.state.current_gw == 2
 
     def test_noop_step(self, env):
         env.reset(seed=42)
         action = _noop_action()
-        obs, reward, terminated, truncated, info = env.step(action)
 
+        # Skip preseason
+        for _ in range(PRESEASON_STEPS):
+            env.step(action)
+
+        # Real GW1
+        obs, reward, terminated, truncated, info = env.step(action)
         assert not terminated
         assert info["gw"] == 1
         assert info["hit_cost"] == 0
 
-    def test_gw1_resets_ft_to_one(self, env):
-        """After GW1 step, free transfers should be reset to 1 for GW2."""
-        env.reset(seed=42)
-        action = _noop_action()
-        env.step(action)
-
-        from fpl_rl.utils.constants import INITIAL_FREE_TRANSFERS
-        assert env.state.free_transfers == INITIAL_FREE_TRANSFERS
-
     def test_full_season_no_crash(self, env):
-        """Run through all available GWs without crashing."""
+        """Run through preseason + all available GWs without crashing."""
         env.reset(seed=42)
         total_reward = 0.0
-        gw = 0
+        steps = 0
 
         while True:
             action = _noop_action()
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
-            gw += 1
+            steps += 1
 
             if terminated or truncated:
                 break
 
-        assert gw == env._num_gws
+        assert steps == PRESEASON_STEPS + env._num_gws
         assert env.state.total_points != 0
 
 
@@ -172,7 +254,6 @@ class TestFPLEnvMasks:
         env.reset(seed=42)
         masks = env.action_masks()
 
-        # Each dimension should have at least one valid action
         offset = 0
         for dim_size in env.action_space.nvec:
             dim_mask = masks[offset : offset + dim_size]

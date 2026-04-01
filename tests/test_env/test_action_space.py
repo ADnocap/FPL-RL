@@ -249,3 +249,17 @@ class TestActionEncoder:
             # Should have up to 5 valid transfers (depends on pool/squad)
             assert len(engine_action.transfers_out) <= 5
             assert len(engine_action.transfers_out) == len(engine_action.transfers_in)
+
+    def test_preseason_chips_masked(self, loader, sample_state):
+        """During preseason, all chips except 'none' should be masked."""
+        encoder = ActionEncoder(loader)
+        encoder.build_candidate_pool(sample_state, 1)
+
+        mask = encoder.get_action_mask(sample_state, preseason=True)
+
+        chip_offset = MASK_LENGTH - 6  # CHIP_DIM = 6
+        assert mask[chip_offset] == True  # chip=none
+        for i in range(1, 6):
+            assert mask[chip_offset + i] == False, (
+                f"Chip index {i} should be masked during preseason"
+            )

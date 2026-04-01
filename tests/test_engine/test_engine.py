@@ -137,6 +137,60 @@ class TestEngineStep:
             pass
 
 
+class TestEnginePreseason:
+    """Pre-season steps: transfers/lineup only, no scoring/GW advance."""
+
+    def test_preseason_zeroed_result(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction()
+        _, result = engine.step(sample_state, action, preseason=True)
+
+        assert result.gw_points == 0
+        assert result.hit_cost == 0
+        assert result.net_points == 0
+        assert result.captain_points == 0
+        assert result.bench_points == 0
+        assert result.auto_subs == []
+        assert result.captain_failover is False
+
+    def test_preseason_no_gw_advance(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction()
+        new_state, _ = engine.step(sample_state, action, preseason=True)
+
+        assert new_state.current_gw == sample_state.current_gw
+
+    def test_preseason_no_total_points_change(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction()
+        new_state, _ = engine.step(sample_state, action, preseason=True)
+
+        assert new_state.total_points == sample_state.total_points
+
+    def test_preseason_transfers_applied(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction(transfers_out=[7], transfers_in=[16])
+        new_state, _ = engine.step(sample_state, action, preseason=True)
+
+        assert new_state.squad.find_player_idx(16) is not None
+        assert new_state.squad.find_player_idx(7) is None
+
+    def test_preseason_chip_ignored(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction(chip="wildcard")
+        new_state, _ = engine.step(sample_state, action, preseason=True)
+
+        # Wildcard should not be consumed
+        assert new_state.chips.is_available("wildcard", 1)
+
+    def test_preseason_no_ft_banking(self, loader, sample_state):
+        engine = FPLGameEngine(loader)
+        action = EngineAction()
+        new_state, _ = engine.step(sample_state, action, preseason=True)
+
+        assert new_state.free_transfers == sample_state.free_transfers
+
+
 class TestEngineMultiGW:
     def test_two_gw_noop(self, loader, sample_state):
         """Test running two consecutive GWs with no actions."""
