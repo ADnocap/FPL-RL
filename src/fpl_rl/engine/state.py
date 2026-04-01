@@ -76,16 +76,29 @@ class ChipState:
     free_hit: list[bool] = field(default_factory=lambda: [True, True])
     bench_boost: list[bool] = field(default_factory=lambda: [True, True])
     triple_captain: list[bool] = field(default_factory=lambda: [True, True])
+    # 2025-26 rule: Free Hit cannot be used in both GW19 and GW20
+    free_hit_last_used_gw: int | None = None
 
     def is_available(self, chip: str, gw: int) -> bool:
         """Check if a chip is available for the given GW."""
         half = 0 if gw <= 19 else 1
-        return self._get_chip_list(chip)[half]
+        available = self._get_chip_list(chip)[half]
+        if not available:
+            return False
+        # 2025-26: Free Hit cannot be used in both GW19 and GW20
+        if chip == "free_hit" and self.free_hit_last_used_gw is not None:
+            if (self.free_hit_last_used_gw == 19 and gw == 20) or (
+                self.free_hit_last_used_gw == 20 and gw == 19
+            ):
+                return False
+        return True
 
     def use_chip(self, chip: str, gw: int) -> None:
         """Mark a chip as used."""
         half = 0 if gw <= 19 else 1
         self._get_chip_list(chip)[half] = False
+        if chip == "free_hit":
+            self.free_hit_last_used_gw = gw
 
     def expire_first_half(self) -> None:
         """Expire unused first-half chips (called after GW19)."""
@@ -111,6 +124,7 @@ class ChipState:
             free_hit=list(self.free_hit),
             bench_boost=list(self.bench_boost),
             triple_captain=list(self.triple_captain),
+            free_hit_last_used_gw=self.free_hit_last_used_gw,
         )
 
 

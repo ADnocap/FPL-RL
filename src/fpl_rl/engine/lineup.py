@@ -61,12 +61,7 @@ def perform_auto_subs(
                 subs_made.append((out_id, bench_element_id))
                 break  # This bench player is now used
 
-    # Rebuild bench: remove used bench players, keep order
-    new_bench = [b for i, b in enumerate(squad.bench) if b not in
-                 {squad.bench[i] for i in range(len(squad.bench))
-                  if any(squad.players[squad.bench[i]].element_id == s[1] for s in subs_made)}]
-
-    # Simpler approach: just remove subbed-in players from bench
+    # Remove subbed-in players from bench, keep order
     subbed_in_ids = {s[1] for s in subs_made}
     squad.bench = [
         b for b in squad.bench

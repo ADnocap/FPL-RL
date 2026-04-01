@@ -13,18 +13,21 @@ from fpl_rl.engine.transfers import calculate_selling_price
 from fpl_rl.utils.constants import ALL_CHIPS, VALID_FORMATIONS, Position
 
 # Action space dimensions
-NUM_TRANSFERS_DIM = 3  # 0, 1, or 2 transfers
+MAX_TRANSFERS_PER_STEP = 5  # matches MAX_FREE_TRANSFERS
+NUM_TRANSFERS_DIM = MAX_TRANSFERS_PER_STEP + 1  # 0..5 transfers
 SQUAD_DIM = 15  # squad index for transfer out / captain / vice captain / bench
 CANDIDATE_POOL_DIM = 50  # candidate pool index for transfer in
 FORMATION_DIM = 8  # one per valid formation
 CHIP_DIM = 6  # 0=none, 1=WC, 2=FH, 3=BB, 4=TC, 5=reserved
 
+# Transfer pairs: 5 out/in slots (unused slots ignored based on num_transfers)
+_TRANSFER_DIMS: list[int] = []
+for _i in range(MAX_TRANSFERS_PER_STEP):
+    _TRANSFER_DIMS.extend([SQUAD_DIM, CANDIDATE_POOL_DIM])
+
 ACTION_DIMS = [
-    NUM_TRANSFERS_DIM,  # num_transfers
-    SQUAD_DIM,          # transfer_out_1
-    CANDIDATE_POOL_DIM, # transfer_in_1
-    SQUAD_DIM,          # transfer_out_2
-    CANDIDATE_POOL_DIM, # transfer_in_2
+    NUM_TRANSFERS_DIM,  # num_transfers (0-5)
+    *_TRANSFER_DIMS,    # 5 × (transfer_out, transfer_in) pairs
     SQUAD_DIM,          # captain_idx
     SQUAD_DIM,          # vice_captain_idx
     FORMATION_DIM,      # formation
@@ -34,7 +37,7 @@ ACTION_DIMS = [
     CHIP_DIM,           # chip
 ]
 
-MASK_LENGTH = sum(ACTION_DIMS)  # 222
+MASK_LENGTH = sum(ACTION_DIMS)
 
 CHIP_INDEX_MAP = {
     0: None,
@@ -69,8 +72,8 @@ class ActionEncoder:
     ) -> dict[Position, list[int]]:
         """Compute and cache the per-position ranked player lists for a GW.
 
-        The expensive DataFrame operations (apply with position lambda,
-        sort_values, drop_duplicates) are done once per GW and cached.
+        Players are ranked by rolling form (average of previous GWs) to avoid
+        lookahead bias — we never use current-GW total_points for ranking.
         """
         if gw in self._gw_base_pool:
             return self._gw_base_pool[gw]
@@ -86,22 +89,22 @@ class ActionEncoder:
             self._gw_base_pool[gw] = base
             return base
 
-        # Deduplicate and sort once
+        # Deduplicate
         unique = gw_data.drop_duplicates(subset="element")
 
         # Build position lookup for all unique elements
         element_ids = unique["element"].astype(int).tolist()
         pos_map = {eid: self.loader.get_player_position(eid) for eid in element_ids}
 
-        # Sort all players by total_points descending
-        unique = unique.sort_values("total_points", ascending=False)
+        # Rank by rolling form (past GWs only) to avoid lookahead
+        form_scores = {
+            eid: self.loader.get_player_form(eid, gw, window=5)
+            for eid in element_ids
+        }
 
         for pos in Position:
-            pos_eids = [
-                int(row["element"])
-                for _, row in unique.iterrows()
-                if pos_map.get(int(row["element"])) == pos
-            ]
+            pos_eids = [eid for eid in element_ids if pos_map.get(eid) == pos]
+            pos_eids.sort(key=lambda eid: form_scores.get(eid, 0.0), reverse=True)
             base[pos] = pos_eids
 
         self._gw_base_pool[gw] = base
@@ -157,32 +160,33 @@ class ActionEncoder:
 
         Invalid combinations fall back to no-op.
         """
-        num_transfers = int(action[0])
-        out1_idx = int(action[1])
-        in1_idx = int(action[2])
-        out2_idx = int(action[3])
-        in2_idx = int(action[4])
-        captain_idx = int(action[5])
-        vice_captain_idx = int(action[6])
-        formation_idx = int(action[7])
-        bench1_idx = int(action[8])
-        bench2_idx = int(action[9])
-        bench3_idx = int(action[10])
-        chip_idx = int(action[11])
+        idx = 0
+        num_transfers = int(action[idx]); idx += 1
+
+        # Read 5 transfer pairs
+        transfer_pairs: list[tuple[int, int]] = []
+        for _ in range(MAX_TRANSFERS_PER_STEP):
+            out_idx = int(action[idx]); idx += 1
+            in_idx = int(action[idx]); idx += 1
+            transfer_pairs.append((out_idx, in_idx))
+
+        captain_idx = int(action[idx]); idx += 1
+        vice_captain_idx = int(action[idx]); idx += 1
+        formation_idx = int(action[idx]); idx += 1
+        bench1_idx = int(action[idx]); idx += 1
+        bench2_idx = int(action[idx]); idx += 1
+        bench3_idx = int(action[idx]); idx += 1
+        chip_idx = int(action[idx]); idx += 1
 
         transfers_out: list[int] = []
         transfers_in: list[int] = []
 
-        if num_transfers >= 1 and self._candidate_pool:
-            out_id = self._safe_squad_id(state, out1_idx)
-            in_id = self._safe_pool_id(in1_idx)
-            if out_id is not None and in_id is not None:
-                transfers_out.append(out_id)
-                transfers_in.append(in_id)
-
-        if num_transfers >= 2 and self._candidate_pool:
-            out_id = self._safe_squad_id(state, out2_idx)
-            in_id = self._safe_pool_id(in2_idx)
+        for t in range(min(num_transfers, MAX_TRANSFERS_PER_STEP)):
+            if not self._candidate_pool:
+                break
+            out_raw, in_raw = transfer_pairs[t]
+            out_id = self._safe_squad_id(state, out_raw)
+            in_id = self._safe_pool_id(in_raw)
             if (
                 out_id is not None
                 and in_id is not None
@@ -327,35 +331,38 @@ class ActionEncoder:
         mask = np.ones(MASK_LENGTH, dtype=bool)
         offset = 0
 
-        # num_transfers: always allow 0, 1, 2
+        # num_transfers: allow 0..MAX_TRANSFERS_PER_STEP
         offset += NUM_TRANSFERS_DIM
 
-        # transfer_out_1: all 15 squad positions valid
-        offset += SQUAD_DIM
-
-        # transfer_in_1: mask out empty pool slots
+        # 5 transfer pairs: (transfer_out, transfer_in)
         pool_len = len(self._candidate_pool)
-        for i in range(CANDIDATE_POOL_DIM):
-            if i >= pool_len:
+        for _ in range(MAX_TRANSFERS_PER_STEP):
+            # transfer_out: all 15 squad positions valid
+            offset += SQUAD_DIM
+            # transfer_in: mask out empty pool slots
+            for i in range(CANDIDATE_POOL_DIM):
+                if i >= pool_len:
+                    mask[offset + i] = False
+            offset += CANDIDATE_POOL_DIM
+
+        # captain_idx: restrict to current lineup players only
+        lineup_set = set(state.squad.lineup)
+        for i in range(SQUAD_DIM):
+            if i not in lineup_set:
                 mask[offset + i] = False
-        offset += CANDIDATE_POOL_DIM
-
-        # transfer_out_2: all 15 valid
         offset += SQUAD_DIM
 
-        # transfer_in_2: same as in_1
-        for i in range(CANDIDATE_POOL_DIM):
-            if i >= pool_len:
+        # vice_captain_idx: restrict to current lineup players only
+        for i in range(SQUAD_DIM):
+            if i not in lineup_set:
                 mask[offset + i] = False
-        offset += CANDIDATE_POOL_DIM
-
-        # captain_idx: all 15 valid
         offset += SQUAD_DIM
 
-        # vice_captain_idx: all 15 valid
-        offset += SQUAD_DIM
-
-        # formation: all 8 valid (standard squad always supports all formations)
+        # formation: mask based on achievable formations given squad
+        achievable = self._get_achievable_formations(state)
+        for i in range(FORMATION_DIM):
+            if i not in achievable:
+                mask[offset + i] = False
         offset += FORMATION_DIM
 
         # bench_1, bench_2, bench_3: mask GK positions (only outfield on bench)
@@ -380,6 +387,34 @@ class ActionEncoder:
         # Always allow chip=0 (none)
 
         return mask
+
+    @staticmethod
+    def _get_achievable_formations(state: GameState) -> set[int]:
+        """Return formation indices achievable with current squad composition.
+
+        A formation is achievable if benching 3 outfield players can produce
+        exactly that DEF/MID/FWD split in the remaining 10 outfield starters.
+        """
+        from collections import Counter
+        players = state.squad.players
+        pos_counts = Counter(
+            p.position for p in players if p.position != Position.GK
+        )
+        n_def = pos_counts.get(Position.DEF, 0)
+        n_mid = pos_counts.get(Position.MID, 0)
+        n_fwd = pos_counts.get(Position.FWD, 0)
+
+        achievable: set[int] = set()
+        for idx, (t_def, t_mid, t_fwd) in FORMATION_INDEX_MAP.items():
+            # Need to bench exactly (n_def - t_def) DEFs, etc.
+            bench_def = n_def - t_def
+            bench_mid = n_mid - t_mid
+            bench_fwd = n_fwd - t_fwd
+            if bench_def >= 0 and bench_mid >= 0 and bench_fwd >= 0:
+                if bench_def + bench_mid + bench_fwd == 3:
+                    achievable.add(idx)
+
+        return achievable
 
     def _safe_squad_id(self, state: GameState, idx: int) -> int | None:
         """Safely get element_id from squad by index."""

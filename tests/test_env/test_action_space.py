@@ -6,20 +6,52 @@ import pytest
 from fpl_rl.env.action_space import (
     ACTION_DIMS,
     MASK_LENGTH,
+    MAX_TRANSFERS_PER_STEP,
     ActionEncoder,
     create_action_space,
 )
 
 
+def _make_action(
+    num_transfers=0,
+    transfers=None,
+    captain=0,
+    vice=1,
+    formation=0,
+    bench=(3, 4, 5),
+    chip=0,
+) -> np.ndarray:
+    """Build an 18-element action array for the new 5-transfer action space."""
+    a = np.zeros(len(ACTION_DIMS), dtype=int)
+    a[0] = num_transfers
+
+    # Fill transfer pairs (slots 1-10)
+    if transfers:
+        for i, (out_idx, in_idx) in enumerate(transfers):
+            a[1 + i * 2] = out_idx
+            a[2 + i * 2] = in_idx
+
+    # Indices after the 5 transfer pairs: 11=captain, 12=vice, 13=formation,
+    # 14-16=bench, 17=chip
+    base = 1 + MAX_TRANSFERS_PER_STEP * 2  # 11
+    a[base] = captain
+    a[base + 1] = vice
+    a[base + 2] = formation
+    a[base + 3] = bench[0]
+    a[base + 4] = bench[1]
+    a[base + 5] = bench[2]
+    a[base + 6] = chip
+    return a
+
+
 class TestActionSpace:
     def test_space_dimensions(self):
         space = create_action_space()
-        assert space.shape == (12,)
+        assert space.shape == (len(ACTION_DIMS),)
         assert list(space.nvec) == ACTION_DIMS
 
     def test_mask_length(self):
         assert MASK_LENGTH == sum(ACTION_DIMS)
-        assert MASK_LENGTH == 222
 
 
 class TestActionEncoder:
@@ -27,8 +59,7 @@ class TestActionEncoder:
         encoder = ActionEncoder(loader)
         encoder.build_candidate_pool(sample_state, 1)
 
-        # action: 0 transfers, everything else ignored
-        action = np.array([0, 0, 0, 0, 0, 7, 12, 0, 3, 4, 5, 0])
+        action = _make_action(captain=7, vice=12)
         engine_action = encoder.decode(action, sample_state)
 
         assert engine_action.transfers_out == []
@@ -41,7 +72,11 @@ class TestActionEncoder:
 
         if pool:
             # 1 transfer: out squad idx 6 (DEF5), in pool idx 0
-            action = np.array([1, 6, 0, 0, 0, 7, 12, 0, 3, 4, 5, 0])
+            action = _make_action(
+                num_transfers=1,
+                transfers=[(6, 0)],
+                captain=7, vice=12,
+            )
             engine_action = encoder.decode(action, sample_state)
 
             assert len(engine_action.transfers_out) == 1
@@ -53,7 +88,7 @@ class TestActionEncoder:
         encoder.build_candidate_pool(sample_state, 1)
 
         # Captain idx 12 (FWD1, element 13), vice idx 7 (MID1, element 8)
-        action = np.array([0, 0, 0, 0, 0, 12, 7, 0, 3, 4, 5, 0])
+        action = _make_action(captain=12, vice=7)
         engine_action = encoder.decode(action, sample_state)
 
         assert engine_action.captain == 13  # FWD1
@@ -63,8 +98,7 @@ class TestActionEncoder:
         encoder = ActionEncoder(loader)
         encoder.build_candidate_pool(sample_state, 1)
 
-        # Same player for captain and vice — vice should be None
-        action = np.array([0, 0, 0, 0, 0, 7, 7, 0, 3, 4, 5, 0])
+        action = _make_action(captain=7, vice=7)
         engine_action = encoder.decode(action, sample_state)
 
         assert engine_action.captain is not None
@@ -74,8 +108,7 @@ class TestActionEncoder:
         encoder = ActionEncoder(loader)
         encoder.build_candidate_pool(sample_state, 1)
 
-        # Chip index 3 = bench_boost (now at position 11)
-        action = np.array([0, 0, 0, 0, 0, 7, 12, 0, 3, 4, 5, 3])
+        action = _make_action(captain=7, vice=12, chip=3)  # bench_boost
         engine_action = encoder.decode(action, sample_state)
 
         assert engine_action.chip == "bench_boost"
@@ -87,8 +120,7 @@ class TestActionEncoder:
         # Use wildcard first
         sample_state.chips.use_chip("wildcard", 1)
 
-        # Try to use wildcard again — should fall back to None
-        action = np.array([0, 0, 0, 0, 0, 7, 12, 0, 3, 4, 5, 1])
+        action = _make_action(captain=7, vice=12, chip=1)  # wildcard again
         engine_action = encoder.decode(action, sample_state)
 
         assert engine_action.chip is None
@@ -135,11 +167,10 @@ class TestActionEncoder:
         ]
         b1, b2, b3 = outfield[0], outfield[1], outfield[2]
 
-        # Formation 3 = (4, 4, 2) — check if achievable with these bench picks
-        action = np.array([0, 0, 0, 0, 0, 7, 12, 3, b1, b2, b3, 0])
+        # Formation 3 = (4, 4, 2)
+        action = _make_action(captain=7, vice=12, formation=3, bench=(b1, b2, b3))
         engine_action = encoder.decode(action, sample_state)
 
-        # If the formation matched, lineup/bench should be set
         if engine_action.lineup is not None:
             assert len(engine_action.lineup) == 11
             assert len(engine_action.bench) == 4
@@ -149,14 +180,16 @@ class TestActionEncoder:
         encoder = ActionEncoder(loader)
         encoder.build_candidate_pool(sample_state, 1)
 
-        # Bench 3 DEFs with formation 5-3-2 (needs 5 DEFs but only 2 left)
+        # Bench 3 DEFs with formation 5-4-1 (needs 5 DEFs but only 2 left)
         defs = [
             i for i, p in enumerate(sample_state.squad.players)
             if p.position.name == "DEF"
         ]
         if len(defs) >= 3:
-            action = np.array([0, 0, 0, 0, 0, 7, 12, 7, defs[0], defs[1], defs[2], 0])
-            # formation 7 = (5,4,1) needs 5 DEF, but we benched 3 of 5 → only 2 left
+            action = _make_action(
+                captain=7, vice=12, formation=7,  # (5,4,1)
+                bench=(defs[0], defs[1], defs[2]),
+            )
             engine_action = encoder.decode(action, sample_state)
             assert engine_action.lineup is None
             assert engine_action.bench is None
@@ -168,14 +201,19 @@ class TestActionEncoder:
 
         mask = encoder.get_action_mask(sample_state)
 
-        # Find GK indices in squad
         gk_indices = [
             i for i, p in enumerate(sample_state.squad.players)
             if p.position.name == "GK"
         ]
 
-        # Check bench dims (offset: 3+15+50+15+50+15+15+8 = 171)
-        bench_offset = 3 + 15 + 50 + 15 + 50 + 15 + 15 + 8
+        # bench dims start after: num_transfers + 5*(squad+pool) + captain + vice + formation
+        bench_offset = (
+            6  # NUM_TRANSFERS_DIM
+            + MAX_TRANSFERS_PER_STEP * (15 + 50)  # 5 transfer pairs
+            + 15  # captain
+            + 15  # vice
+            + 8   # formation
+        )
         for bench_dim in range(3):
             dim_start = bench_offset + bench_dim * 15
             for gk_i in gk_indices:
@@ -192,7 +230,22 @@ class TestActionEncoder:
         for _ in range(10):
             action = space.sample()
             engine_action = encoder.decode(action, sample_state)
-            # Should always produce a valid EngineAction
             assert isinstance(engine_action.transfers_out, list)
             assert isinstance(engine_action.transfers_in, list)
+            assert len(engine_action.transfers_out) == len(engine_action.transfers_in)
+
+    def test_decode_five_transfers(self, loader, sample_state):
+        """5 transfers should be decoded correctly."""
+        encoder = ActionEncoder(loader)
+        pool = encoder.build_candidate_pool(sample_state, 1)
+
+        if len(pool) >= 5:
+            action = _make_action(
+                num_transfers=5,
+                transfers=[(2, 0), (3, 1), (4, 2), (5, 3), (6, 4)],
+                captain=7, vice=12,
+            )
+            engine_action = encoder.decode(action, sample_state)
+            # Should have up to 5 valid transfers (depends on pool/squad)
+            assert len(engine_action.transfers_out) <= 5
             assert len(engine_action.transfers_out) == len(engine_action.transfers_in)

@@ -104,22 +104,17 @@ class FPLGameEngine:
         # 5. Update selling prices
         state.squad = update_selling_prices(state.squad, self.loader, gw)
 
-        # 6 & 7. Calculate points with captain logic
+        # 6. Auto-substitution (before captain calc — captain bonus
+        # must reflect the final, post-sub lineup)
+        state.squad, auto_subs = perform_auto_subs(state.squad, self.loader, gw)
+
+        # 7. Calculate points with captain logic (post-auto-sub)
         lineup_points, bench_points = calculate_squad_points(
             self.loader, state.squad, gw
         )
         captain_bonus, captain_failover = calculate_captain_points(
             self.loader, state.squad, gw, triple_captain=is_triple_captain
         )
-
-        # 8. Auto-substitution
-        state.squad, auto_subs = perform_auto_subs(state.squad, self.loader, gw)
-
-        # Recalculate lineup points after auto-subs
-        if auto_subs:
-            lineup_points, bench_points = calculate_squad_points(
-                self.loader, state.squad, gw
-            )
 
         # 9. Calculate total GW points
         gw_points = lineup_points + captain_bonus

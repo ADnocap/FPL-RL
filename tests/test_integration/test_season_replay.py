@@ -3,6 +3,22 @@
 import numpy as np
 import pytest
 
+from fpl_rl.env.action_space import ACTION_DIMS, MAX_TRANSFERS_PER_STEP
+
+
+def _noop_action() -> np.ndarray:
+    """Build a no-op action (0 transfers, keep defaults)."""
+    a = np.zeros(len(ACTION_DIMS), dtype=int)
+    base = 1 + MAX_TRANSFERS_PER_STEP * 2  # 11
+    a[base] = 0       # captain
+    a[base + 1] = 1   # vice
+    a[base + 2] = 0   # formation
+    a[base + 3] = 3   # bench_1
+    a[base + 4] = 4   # bench_2
+    a[base + 5] = 5   # bench_3
+    a[base + 6] = 0   # chip (none)
+    return a
+
 
 @pytest.fixture
 def env(test_data_dir):
@@ -65,7 +81,7 @@ class TestNoOpReplay:
         gws_played = 0
 
         while True:
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])  # no-op
+            action = _noop_action()
             obs, reward, terminated, truncated, info = env.step(action)
             gws_played += 1
 
@@ -140,7 +156,7 @@ class TestMultipleResets:
             assert env.state.total_points == 0
 
             # Take one step
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])
+            action = _noop_action()
             env.step(action)
             assert env.state.current_gw == 2
 

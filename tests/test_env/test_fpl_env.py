@@ -3,7 +3,23 @@
 import numpy as np
 import pytest
 
+from fpl_rl.env.action_space import ACTION_DIMS, MAX_TRANSFERS_PER_STEP
 from fpl_rl.env.fpl_env import FPLEnv
+
+
+def _noop_action() -> np.ndarray:
+    """Build a no-op action (0 transfers, keep captain/vice/formation)."""
+    a = np.zeros(len(ACTION_DIMS), dtype=int)
+    # captain=0, vice=1 (indices into squad — will be lineup players)
+    base = 1 + MAX_TRANSFERS_PER_STEP * 2  # 11
+    a[base] = 0       # captain
+    a[base + 1] = 1   # vice
+    a[base + 2] = 0   # formation
+    a[base + 3] = 3   # bench_1
+    a[base + 4] = 4   # bench_2
+    a[base + 5] = 5   # bench_3
+    a[base + 6] = 0   # chip (none)
+    return a
 
 
 @pytest.fixture
@@ -81,6 +97,11 @@ class TestFPLEnvReset:
         obs, _ = env.reset(seed=42)
         assert env.observation_space.contains(obs)
 
+    def test_reset_gw1_has_many_free_transfers(self, env):
+        """GW1 should have enough FTs for initial squad reshaping."""
+        env.reset(seed=42)
+        assert env.state.free_transfers >= 5
+
 
 class TestFPLEnvStep:
     def test_step_returns_correct_tuple(self, env):
@@ -105,13 +126,21 @@ class TestFPLEnvStep:
 
     def test_noop_step(self, env):
         env.reset(seed=42)
-        # No-op action: 0 transfers, captain/vice stay, no chip
-        action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])
+        action = _noop_action()
         obs, reward, terminated, truncated, info = env.step(action)
 
         assert not terminated
         assert info["gw"] == 1
         assert info["hit_cost"] == 0
+
+    def test_gw1_resets_ft_to_one(self, env):
+        """After GW1 step, free transfers should be reset to 1 for GW2."""
+        env.reset(seed=42)
+        action = _noop_action()
+        env.step(action)
+
+        from fpl_rl.utils.constants import INITIAL_FREE_TRANSFERS
+        assert env.state.free_transfers == INITIAL_FREE_TRANSFERS
 
     def test_full_season_no_crash(self, env):
         """Run through all available GWs without crashing."""
@@ -120,7 +149,7 @@ class TestFPLEnvStep:
         gw = 0
 
         while True:
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])  # no-op
+            action = _noop_action()
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
             gw += 1
