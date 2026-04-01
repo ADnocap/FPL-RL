@@ -65,7 +65,7 @@ class TestNoOpReplay:
         gws_played = 0
 
         while True:
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0])  # no-op
+            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])  # no-op
             obs, reward, terminated, truncated, info = env.step(action)
             gws_played += 1
 
@@ -140,7 +140,7 @@ class TestMultipleResets:
             assert env.state.total_points == 0
 
             # Take one step
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0])
+            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])
             env.step(action)
             assert env.state.current_gw == 2
 

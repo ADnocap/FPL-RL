@@ -50,7 +50,7 @@ StepResult → RewardCalculator.calculate() → scalar reward
 
 ### Spaces
 
-- **Action**: `MultiDiscrete([3, 15, 50, 15, 50, 15, 15, 6])` = 169 mask length
+- **Action**: `MultiDiscrete([3, 15, 50, 15, 50, 15, 15, 8, 15, 15, 15, 6])` = 222 mask length
 - **Observation**: `Box(1363,)` = 15×24 squad + 50×19 pool + 53 global features
 
 ### Important Conventions

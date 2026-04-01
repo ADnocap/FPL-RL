@@ -106,7 +106,7 @@ class TestFPLEnvStep:
     def test_noop_step(self, env):
         env.reset(seed=42)
         # No-op action: 0 transfers, captain/vice stay, no chip
-        action = np.array([0, 0, 0, 0, 0, 0, 1, 0])
+        action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])
         obs, reward, terminated, truncated, info = env.step(action)
 
         assert not terminated
@@ -120,7 +120,7 @@ class TestFPLEnvStep:
         gw = 0
 
         while True:
-            action = np.array([0, 0, 0, 0, 0, 0, 1, 0])  # no-op
+            action = np.array([0, 0, 0, 0, 0, 0, 1, 0, 3, 4, 5, 0])  # no-op
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
             gw += 1
