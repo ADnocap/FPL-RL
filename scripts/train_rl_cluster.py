@@ -53,6 +53,47 @@ class RollingCheckpointCallback(BaseCallback):
         return True
 
 
+class PPOMetricsCallback(BaseCallback):
+    """Log PPO training metrics to stderr after each rollout.
+
+    SB3 stores metrics in model.logger after each train() call. This
+    callback reads them after each rollout and logs a parseable line.
+    """
+
+    def __init__(self, log_freq: int = 1):
+        super().__init__(verbose=0)
+        self.log_freq = log_freq
+        self._rollout_count = 0
+        self._log = logging.getLogger("train_rl")
+
+    def _on_rollout_end(self) -> None:
+        self._rollout_count += 1
+        if self._rollout_count % self.log_freq != 0:
+            return
+
+        logger = self.model.logger
+        kvs = logger.name_to_value if hasattr(logger, "name_to_value") else {}
+
+        metrics = {
+            "loss": kvs.get("train/loss", float("nan")),
+            "policy_loss": kvs.get("train/policy_gradient_loss", float("nan")),
+            "value_loss": kvs.get("train/value_loss", float("nan")),
+            "entropy": kvs.get("train/entropy_loss", float("nan")),
+            "approx_kl": kvs.get("train/approx_kl", float("nan")),
+            "clip_frac": kvs.get("train/clip_fraction", float("nan")),
+            "expl_var": kvs.get("train/explained_variance", float("nan")),
+            "mean_reward": kvs.get("rollout/ep_rew_mean", float("nan")),
+            "mean_ep_len": kvs.get("rollout/ep_len_mean", float("nan")),
+        }
+
+        parts = " | ".join(f"{k}={v:.4f}" for k, v in metrics.items() if not np.isnan(v))
+        if parts:
+            self._log.info(f"PPO step {self.num_timesteps}: {parts}")
+
+    def _on_step(self) -> bool:
+        return True
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train MaskablePPO on FPL env")
     p.add_argument("--data-dir", type=str, default="data/raw")
@@ -71,10 +112,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", type=str, default=None,
                    help="Path to model .zip to resume from")
+    p.add_argument("--hybrid", action="store_true",
+                   help="Use hybrid RL+MILP env (2-dim action space)")
     return p.parse_args()
 
 
-def make_train_env(rank, seasons, data_dir, predictor_dir, pred_data_dir):
+def make_train_env(rank, seasons, data_dir, predictor_dir, pred_data_dir, hybrid=False):
     def _init():
         from fpl_rl.training.multi_season_env import MultiSeasonFPLEnv
         return MultiSeasonFPLEnv(
@@ -83,6 +126,7 @@ def make_train_env(rank, seasons, data_dir, predictor_dir, pred_data_dir):
             predictor_model_dir=Path(predictor_dir) if predictor_dir else None,
             prediction_data_dir=Path(pred_data_dir) if predictor_dir else None,
             shuffle=True,
+            hybrid=hybrid,
         )
     return _init
 
@@ -124,9 +168,10 @@ def main():
     log.info("=" * 60)
 
     # --- Build environments ---
-    log.info(f"Building {args.n_envs} parallel training envs...")
+    log.info(f"Building {args.n_envs} parallel training envs (hybrid={args.hybrid})...")
     train_env = SubprocVecEnv([
-        make_train_env(i, train_seasons, data_dir, predictor_dir, pred_data_dir)
+        make_train_env(i, train_seasons, data_dir, predictor_dir, pred_data_dir,
+                       hybrid=args.hybrid)
         for i in range(args.n_envs)
     ])
 
@@ -136,7 +181,11 @@ def main():
         eval_kwargs["prediction_integrator"] = PredictionIntegrator.from_model(
             predictor_dir, pred_data_dir, eval_season,
         )
-    eval_env = FPLEnv(**eval_kwargs)
+    if args.hybrid:
+        from fpl_rl.env.hybrid_env import HybridFPLEnv
+        eval_env = HybridFPLEnv(**eval_kwargs)
+    else:
+        eval_env = FPLEnv(**eval_kwargs)
 
     log.info(f"Action space:      {train_env.action_space}")
     log.info(f"Observation space: {train_env.observation_space.shape}")
@@ -156,6 +205,7 @@ def main():
         log.info(f"Resumed from {args.resume}")
         reset_timesteps = False
     else:
+        net_arch = [64, 64] if args.hybrid else [256, 256]
         model = MaskablePPO(
             "MlpPolicy",
             train_env,
@@ -165,7 +215,7 @@ def main():
             learning_rate=args.lr,
             gamma=args.gamma,
             ent_coef=args.ent_coef,
-            policy_kwargs=dict(net_arch=[256, 256]),
+            policy_kwargs=dict(net_arch=net_arch),
             tensorboard_log=tb_log_path,
             seed=args.seed,
             verbose=0,
@@ -198,12 +248,13 @@ def main():
         save_path=str(checkpoint_path),
         verbose=1,
     )
+    metrics_cb = PPOMetricsCallback(log_freq=1)  # log every rollout
 
     # --- Train ---
     log.info("Starting training...")
     model.learn(
         total_timesteps=args.total_steps,
-        callback=[eval_cb, episode_cb, checkpoint_cb],
+        callback=[eval_cb, episode_cb, checkpoint_cb, metrics_cb],
         progress_bar=False,  # no tqdm in batch
         reset_num_timesteps=reset_timesteps,
     )
@@ -230,7 +281,11 @@ def main():
         holdout_kwargs["prediction_integrator"] = PredictionIntegrator.from_model(
             predictor_dir, pred_data_dir, "2024-25",
         )
-    holdout_env = FPLEnv(**holdout_kwargs)
+    if args.hybrid:
+        from fpl_rl.env.hybrid_env import HybridFPLEnv
+        holdout_env = HybridFPLEnv(**holdout_kwargs)
+    else:
+        holdout_env = FPLEnv(**holdout_kwargs)
 
     results = []
     for ep in range(5):

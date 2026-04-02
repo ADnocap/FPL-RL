@@ -53,6 +53,7 @@ def optimize_transfers(
     candidates: list[PlayerCandidate],
     chip: str | None = None,
     top_per_pos: int = _TOP_PER_POSITION,
+    max_transfers: int | None = None,
 ) -> OptimizerResult:
     """Decide optimal transfers for one gameweek.
 
@@ -66,6 +67,10 @@ def optimize_transfers(
         If ``"wildcard"`` or ``"free_hit"``, all transfers are free.
     top_per_pos : int
         Pre-filter to top N candidates per position (plus current squad).
+    max_transfers : int | None
+        Upper bound on the number of transfers. When set (and no WC/FH),
+        the optimizer may make at most this many transfers. The optimizer
+        can make fewer if not profitable. Default ``None`` = unconstrained.
 
     Returns
     -------
@@ -121,6 +126,10 @@ def optimize_transfers(
     current_indices = [eid_to_idx[p.element_id] for p in current_squad]
     s_out = {j: 1 - x[j] for j in current_indices}
     n_transfers = pulp.lpSum(s_out[j] for j in current_indices)
+
+    # Upper bound on transfers (from RL agent's transfer_count decision)
+    if max_transfers is not None and not free_chip:
+        prob += n_transfers <= max_transfers
 
     # Hit cost linearisation: ordered binary vars t_k, k = 1..max_possible_transfers
     max_possible = SQUAD_SIZE  # at most 15 transfers

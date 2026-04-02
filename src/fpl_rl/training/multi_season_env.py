@@ -13,6 +13,10 @@ from fpl_rl.env.action_space import create_action_space
 from fpl_rl.env.fpl_env import FPLEnv
 from fpl_rl.env.observation_space import create_observation_space
 
+# Lazy imports for hybrid mode (avoid importing optimizer at module level)
+_HybridFPLEnv = None
+_create_hybrid_action_space = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +43,8 @@ class MultiSeasonFPLEnv(gymnasium.Env):
     shuffle : bool
         If ``True``, sample a random season on each reset.  Otherwise cycle
         round-robin.
+    hybrid : bool
+        If ``True``, use ``HybridFPLEnv`` (RL+MILP) instead of ``FPLEnv``.
     """
 
     metadata = {"render_modes": ["human"], "name": "MultiSeasonFPLEnv-v0"}
@@ -50,6 +56,7 @@ class MultiSeasonFPLEnv(gymnasium.Env):
         predictor_model_dir: Path | None = None,
         prediction_data_dir: Path | None = None,
         shuffle: bool = False,
+        hybrid: bool = False,
     ) -> None:
         super().__init__()
 
@@ -60,6 +67,7 @@ class MultiSeasonFPLEnv(gymnasium.Env):
         self.data_dir = data_dir
         self.predictor_model_dir = predictor_model_dir
         self.shuffle = shuffle
+        self.hybrid = hybrid
 
         # Resolve the prediction data dir (parent of raw/ by convention)
         if prediction_data_dir is not None:
@@ -80,7 +88,11 @@ class MultiSeasonFPLEnv(gymnasium.Env):
                 )
 
         # Spaces (same for all seasons)
-        self.action_space = create_action_space()
+        if hybrid:
+            from fpl_rl.env.hybrid_action_space import create_hybrid_action_space
+            self.action_space = create_hybrid_action_space()
+        else:
+            self.action_space = create_action_space()
         self.observation_space = create_observation_space()
 
         # Cycling state
@@ -112,11 +124,19 @@ class MultiSeasonFPLEnv(gymnasium.Env):
         # Reuse cached env or create once
         if season not in self._env_cache:
             integrator = self._integrators.get(season)
-            self._env_cache[season] = FPLEnv(
-                season=season,
-                data_dir=self.data_dir,
-                prediction_integrator=integrator,
-            )
+            if self.hybrid:
+                from fpl_rl.env.hybrid_env import HybridFPLEnv
+                self._env_cache[season] = HybridFPLEnv(
+                    season=season,
+                    data_dir=self.data_dir,
+                    prediction_integrator=integrator,
+                )
+            else:
+                self._env_cache[season] = FPLEnv(
+                    season=season,
+                    data_dir=self.data_dir,
+                    prediction_integrator=integrator,
+                )
 
         self._inner_env = self._env_cache[season]
         # Share the rng so the inner env's squad randomisation is seeded

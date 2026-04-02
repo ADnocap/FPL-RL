@@ -35,10 +35,10 @@ htmlcov/
 # Tensorboard
 fpl_tb/
 
-# Models
-*.zip
-*.json
-!pyproject.toml
+# Models and training artifacts
+models/
+runs/
+*.lgb
 
 colab/*
 node_modules/
