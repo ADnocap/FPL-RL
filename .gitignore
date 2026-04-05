@@ -10,10 +10,10 @@ build/
 # Virtual environments
 .venv/
 venv/
-env/
+/env/
 
-# Data (downloaded at runtime)
-data/
+# Data (downloaded at runtime — anchored to root so src/fpl_rl/data/ is NOT ignored)
+/data/
 
 # IDE
 .vscode/
@@ -36,9 +36,16 @@ htmlcov/
 fpl_tb/
 
 # Models and training artifacts
-models/
-runs/
+/models/
+/runs/
 *.lgb
 
+# Temp files
+temp_fbref_*.csv
+src/fpl_rl/data-src.zip
+
+# Other
 colab/*
 node_modules/
+.claude/
+ADnocap/
