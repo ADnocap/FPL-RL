@@ -10,7 +10,6 @@ build/
 # Virtual environments
 .venv/
 venv/
-/env/
 
 # Data (downloaded at runtime — anchored to root so src/fpl_rl/data/ is NOT ignored)
 /data/

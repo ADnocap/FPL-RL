@@ -1,4 +1,4 @@
-"""Hybrid action space: RL outputs strategy, MILP optimizer handles player selection."""
+"""Hybrid action space: RL picks chips, MILP optimizer handles everything else."""
 
 from __future__ import annotations
 
@@ -19,11 +19,10 @@ from fpl_rl.optimizer.types import (
 
 logger = logging.getLogger(__name__)
 
-# Hybrid action space: just 2 dimensions
-HYBRID_TRANSFER_DIM = 6  # 0-5 transfers (upper bound)
+# Hybrid action space: single dimension — chip selection only
 HYBRID_CHIP_DIM = 6  # 0=none, 1=WC, 2=FH, 3=BB, 4=TC, 5=reserved
-HYBRID_ACTION_DIMS = [HYBRID_TRANSFER_DIM, HYBRID_CHIP_DIM]
-HYBRID_MASK_LENGTH = sum(HYBRID_ACTION_DIMS)  # 12
+HYBRID_ACTION_DIMS = [HYBRID_CHIP_DIM]
+HYBRID_MASK_LENGTH = sum(HYBRID_ACTION_DIMS)  # 6
 
 CHIP_INDEX_MAP = {
     0: None,
@@ -36,16 +35,16 @@ CHIP_INDEX_MAP = {
 
 
 def create_hybrid_action_space() -> spaces.MultiDiscrete:
-    """Create the 2-dimensional hybrid action space."""
+    """Create the 1-dimensional hybrid action space (chip only)."""
     return spaces.MultiDiscrete(HYBRID_ACTION_DIMS)
 
 
 class HybridActionEncoder:
-    """Encodes RL strategy decisions into MILP-optimized EngineActions.
+    """Encodes RL chip decisions into MILP-optimized EngineActions.
 
-    The RL agent outputs (transfer_count, chip). This encoder calls the
-    MILP optimizer to find the best specific player selections, lineup,
-    captain, and bench order — guaranteed valid.
+    The RL agent only decides which chip to play (or none). The MILP
+    optimizer handles transfers (unconstrained — it decides how many
+    are profitable), lineup, captain, and bench order.
     """
 
     def __init__(
@@ -60,13 +59,12 @@ class HybridActionEncoder:
     def _get_predicted_points(self, gw: int) -> dict[int, float]:
         """Build predicted points dict for optimizer candidate pool."""
         if self._integrator is not None:
-            # Use LightGBM predictions
             all_eids = self.loader.get_all_element_ids(gw)
             return {
                 eid: self._integrator.get_predicted_points(eid, gw)
                 for eid in all_eids
             }
-        # Fallback: use rolling form as a proxy for predicted points
+        # Fallback: use rolling form
         all_eids = self.loader.get_all_element_ids(gw)
         return {
             eid: self.loader.get_player_form(eid, gw, window=5)
@@ -74,13 +72,12 @@ class HybridActionEncoder:
         }
 
     def decode(self, action: np.ndarray, state: GameState) -> EngineAction:
-        """Convert a 2-dim hybrid action into an optimized EngineAction.
+        """Convert a 1-dim chip action into an optimized EngineAction.
 
-        Calls the MILP optimizer internally to find the best transfers,
-        lineup, captain, and bench order.
+        The optimizer decides transfers (unconstrained), lineup, captain,
+        and bench. The RL agent only controls chip activation.
         """
-        transfer_count = int(action[0])
-        chip_idx = int(action[1])
+        chip_idx = int(action[0])
 
         # Map chip index to name
         chip = CHIP_INDEX_MAP.get(chip_idx)
@@ -88,14 +85,6 @@ class HybridActionEncoder:
             error = validate_chip(state, chip)
             if error:
                 chip = None
-
-        # Determine max_transfers for optimizer
-        # WC/FH: unlimited transfers (optimizer decides optimally)
-        # Otherwise: upper-bound from RL agent's decision
-        if chip in ("wildcard", "free_hit"):
-            max_transfers = None
-        else:
-            max_transfers = transfer_count
 
         # Build candidate pool with predicted points
         gw = state.current_gw
@@ -107,13 +96,12 @@ class HybridActionEncoder:
             self.last_result = None
             return EngineAction()
 
-        # Call MILP optimizer
+        # Call MILP optimizer — unconstrained transfers (optimizer decides)
         try:
             result = optimize_transfers(
                 state,
                 candidates,
                 chip=chip,
-                max_transfers=max_transfers,
             )
             self.last_result = result
             return to_engine_action(result)
@@ -125,22 +113,16 @@ class HybridActionEncoder:
     def get_action_mask(
         self, state: GameState, **kwargs,
     ) -> np.ndarray:
-        """Build a 12-element boolean mask.
-
-        - transfer_count (0-5): always all valid (optimizer handles feasibility)
-        - chip (0-5): mask unavailable chips
-        """
+        """Build a 6-element boolean mask for chip selection."""
         mask = np.ones(HYBRID_MASK_LENGTH, dtype=bool)
 
-        # Chip dimension (indices 6-11)
-        chip_offset = HYBRID_TRANSFER_DIM
         for i in range(HYBRID_CHIP_DIM):
             chip_name = CHIP_INDEX_MAP.get(i)
             if chip_name is None:
                 if i == 5:  # reserved
-                    mask[chip_offset + i] = False
+                    mask[i] = False
             else:
                 if not state.chips.is_available(chip_name, state.current_gw):
-                    mask[chip_offset + i] = False
+                    mask[i] = False
 
         return mask

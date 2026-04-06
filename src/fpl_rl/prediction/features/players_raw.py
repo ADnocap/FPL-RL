@@ -1,12 +1,16 @@
 """Features derived from FPL expected points (xP).
 
-The ``xP`` column in merged_gw.csv contains FPL's predicted points per
-player per GW, published BEFORE the GW deadline — fully point-in-time
-safe.  Available from 2020-21 onward.
+The ``xP`` column in merged_gw.csv contains FPL's official pre-match
+expected points prediction (``ep_this`` from the bootstrap-static API),
+scraped by vaastav BEFORE each GW deadline.  It is safe to use unshifted
+for the current GW — this is information available to all FPL managers
+before the deadline.
+
+Available from 2020-21 onward.  For older seasons the feature is NaN.
 
 Features (per element per GW)
 -----------------------------
-fpl_xp : FPL's own predicted points for this GW (2020-21+)
+fpl_xp : FPL's pre-match expected points for this GW
 """
 
 from __future__ import annotations
@@ -30,9 +34,9 @@ def compute_players_raw_features(
 ) -> pd.DataFrame:
     """Extract FPL expected points from merged_gw.
 
-    Uses the ``xP`` column directly from merged_gw.csv, which is
-    available for seasons 2020-21 onward.  For older seasons the
-    feature is NaN.
+    Uses the ``xP`` column directly from merged_gw.csv.  This is FPL's
+    official pre-match prediction (ep_this), scraped before each GW
+    deadline.  No shift needed — the value is point-in-time safe.
 
     Parameters
     ----------
