@@ -279,6 +279,23 @@ class FeaturePipeline:
         # Seasonal position (captures early-season rotation, end-of-season patterns)
         if "GW" in df.columns:
             df["gw_phase"] = df["GW"] / 38.0
+        # Transfer demand ratio (crowd buys vs sells — pre-game wisdom)
+        if "transfers_in_rolling_3" in df.columns and "transfers_out_rolling_3" in df.columns:
+            df["transfer_ratio_3"] = df["transfers_in_rolling_3"] / (
+                df["transfers_out_rolling_3"] + eps
+            )
+        # ICT momentum (short vs long)
+        if "ict_rolling_3" in df.columns and "ict_rolling_10" in df.columns:
+            df["ict_form_delta"] = df["ict_rolling_3"] - df["ict_rolling_10"]
+        # BPS momentum (short vs long)
+        if "bps_rolling_5" in df.columns and "bps_rolling_10" in df.columns:
+            df["bps_form_delta"] = df["bps_rolling_5"] - df["bps_rolling_10"]
+        # Nailedness proxy (fraction of recent games started)
+        if "starts_rolling_5" in df.columns and "mins_rolling_5" in df.columns:
+            df["nailedness"] = df["starts_rolling_5"]  # already 0-1 scale as mean
+        # Bonus rate (bonus per point — identifies consistent bonus earners)
+        if "bonus_rolling_5" in df.columns and "pts_rolling_5" in df.columns:
+            df["bonus_rate_5"] = df["bonus_rolling_5"] / (df["pts_rolling_5"] + eps)
         return df
 
     def _extract_gw_dates(self, merged_gw: pd.DataFrame) -> pd.Series:

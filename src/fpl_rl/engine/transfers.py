@@ -105,8 +105,25 @@ def apply_transfers(
     else:
         hit_cost = calculate_transfer_cost(num_transfers, state.free_transfers)
 
-    # Perform each transfer
+    # Sort transfer pairs so cash-positive swaps execute first.
+    # The MILP optimizer guarantees aggregate budget feasibility but the
+    # engine processes pairs sequentially, so ordering matters.
+    sell_prices = []
     for out_id, in_id in zip(transfers_out, transfers_in):
+        out_idx = state.squad.find_player_idx(out_id)
+        sp = state.squad.players[out_idx].selling_price if out_idx is not None else 0
+        bp = loader.get_player_price(in_id, state.current_gw)
+        if bp <= 0:
+            bp = loader.get_player_price(in_id, max(1, state.current_gw - 1))
+        sell_prices.append(sp - bp)
+    pairs = sorted(
+        zip(transfers_out, transfers_in, sell_prices),
+        key=lambda t: t[2],
+        reverse=True,
+    )
+
+    # Perform each transfer
+    for out_id, in_id, _ in pairs:
         # Find the outgoing player
         out_idx = state.squad.find_player_idx(out_id)
         if out_idx is None:

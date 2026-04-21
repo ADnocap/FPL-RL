@@ -60,11 +60,19 @@ _ROLLING_SPECS: list[tuple[str, str, int, str]] = [
     ("reds_rolling_10", "red_cards", 10, "sum"),
     # Starts (rotation signal, 2022-23+ only)
     ("starts_rolling_5", "starts", 5, "mean"),
-    # FPL expected stats (2022-23+ only)
+    # FPL expected stats (2022-23+ only) — post-game, shifted safe
+    ("fpl_xg_rolling_3", "expected_goals", 3, "mean"),
     ("fpl_xg_rolling_5", "expected_goals", 5, "mean"),
+    ("fpl_xa_rolling_3", "expected_assists", 3, "mean"),
     ("fpl_xa_rolling_5", "expected_assists", 5, "mean"),
+    ("fpl_xgi_rolling_3", "expected_goal_involvements", 3, "mean"),
     ("fpl_xgi_rolling_5", "expected_goal_involvements", 5, "mean"),
     ("fpl_xgc_rolling_5", "expected_goals_conceded", 5, "mean"),
+    # Transfers in/out separately (crowd wisdom — pre-game)
+    ("transfers_in_rolling_3", "transfers_in", 3, "mean"),
+    ("transfers_in_rolling_5", "transfers_in", 5, "mean"),
+    ("transfers_out_rolling_3", "transfers_out", 3, "mean"),
+    ("transfers_out_rolling_5", "transfers_out", 5, "mean"),
     # Detailed stats from old seasons (2016-17 to 2018-19 only)
     ("fpl_key_passes_rolling_5", "key_passes", 5, "mean"),
     ("tackles_rolling_5", "tackles", 5, "mean"),
@@ -81,7 +89,7 @@ _NUMERIC_SUM_COLS = [
     "saves", "goals_conceded", "yellow_cards", "red_cards",
     "starts", "expected_goals", "expected_assists",
     "expected_goal_involvements", "expected_goals_conceded",
-    "transfers_balance",
+    "transfers_balance", "transfers_in", "transfers_out",
     # Old-season detailed stats (2016-19 only, NaN for newer seasons)
     "key_passes", "tackles", "completed_passes",
     "big_chances_created", "recoveries", "dribbles",
@@ -97,7 +105,7 @@ _LAST_COLS = ["value", "selected"]
 FEATURE_COLUMNS: list[str] = (
     [spec[0] for spec in _ROLLING_SPECS]
     + ["season_avg_pts", "season_total_mins", "games_played",
-       "value", "selected_norm"]
+       "value", "selected_norm", "value_momentum", "selected_momentum"]
 )
 
 
@@ -209,6 +217,10 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
     # ------------------------------------------------------------------
     # value is already in the df from the aggregation step
     df["selected_norm"] = df["selected"] / 1e7
+
+    # Value and selected momentum (change from prior GW — pre-game signals)
+    df["value_momentum"] = df["value"] - grouped["value"].shift(1)
+    df["selected_momentum"] = df["selected_norm"] - grouped["selected"].shift(1) / 1e7
 
     # ------------------------------------------------------------------
     # 5. Select output columns

@@ -13,11 +13,10 @@ cd /gpfs/workdir/dalbanal/fpl-rl
 PYTHON=/gpfs/workdir/dalbanal/envs/fpl-rl/bin/python
 
 echo "============================================"
-echo "Hybrid RL Training — UNSHIFTED xP"
+echo "Hybrid RL Training — UNSHIFTED xP (RESUME)"
 echo "Job ID: $SLURM_JOB_ID | Start: $(date)"
+echo "Resuming from checkpoint_1499976_steps.zip"
 echo "============================================"
-
-rm -rf runs/hybrid_unshifted
 
 $PYTHON scripts/train_rl_cluster.py \
     --hybrid \
@@ -25,6 +24,7 @@ $PYTHON scripts/train_rl_cluster.py \
     --predictor-dir models/ab_test_unshifted \
     --run-dir runs/hybrid_unshifted \
     --total-steps 5000000 \
+    --resume runs/hybrid_unshifted/checkpoints/checkpoint_1499976_steps.zip \
     --n-envs 12 \
     --batch-size 256 \
     --n-steps 1024 \
