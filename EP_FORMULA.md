@@ -39,7 +39,7 @@ Key points:
 - **Between deadlines:** `ep_this` is **immutable**. Matches kick off, finish, bonus is awarded, `data_checked` flips — none of this touches `ep_this`.
 - **Transition 2 (deadline N+1):** The single `ep_this` slot is overwritten with GW N+1's prediction. GW N's value is no longer queryable.
 
-**"Persists after finished"** and **"no longer scrapable after the GW"** both hold — they refer to different boundaries. The first means ep_this stays the same *during* the is_current window even once every match has been played. The second means that *after the next deadline* (a later event) the slot is reused.
+**"Persists after finished"** and **"no longer scrapable after the GW"** both hold — they refer to different boundaries. The first means ep_this stays the same _during_ the is_current window even once every match has been played. The second means that _after the next deadline_ (a later event) the slot is reused.
 
 ---
 
@@ -47,7 +47,7 @@ Key points:
 
 ### 3.1 The API has no post-match slot for ep_this
 
-The `bootstrap-static` response gives each player one `ep_this` field. There is no `ep_history`, no per-GW array, no post-match override. For the API to return a post-match value for GW N, FPL would have to *rewrite the live scalar* after matches ended. They do not, and we prove it below in §4.
+The `bootstrap-static` response gives each player one `ep_this` field. There is no `ep_history`, no per-GW array, no post-match override. For the API to return a post-match value for GW N, FPL would have to _rewrite the live scalar_ after matches ended. They do not, and we prove it below in §4.
 
 ### 3.2 The scraper's filename and its values come from the same API call
 
@@ -84,14 +84,14 @@ The formula's inputs are `form` (30-day rolling average of past `total_points`, 
 
 Captured 2026-04-21, 10/13 GW33 fixtures finished, 3 upcoming. Players whose team has played at least one match have their `form` field updated with the post-match points. If `ep_this` were dynamic, it would reflect the new `form` value. It does not.
 
-For each single-fixture high-scorer, back-solving the formula (`ep_this = round((form + offset) × cop/100, 1)`) recovers the form value *as it was at the deadline*, not the current form:
+For each single-fixture high-scorer, back-solving the formula (`ep_this = round((form + offset) × cop/100, 1)`) recovers the form value _as it was at the deadline_, not the current form:
 
-| Player | GW33 opp | offset | form_now | ep_this (API) | form_deadline (back-solved) | Δ form | ep_this if dynamic |
-|---|---|---|---|---|---|---|---|
-| Son (Spurs) | Brighton | 0 | 6.0 | **3.5** | 3.5 | +2.5 | 6.0 ≠ 3.5 |
-| Rashford (Man Utd) | Chelsea | 0 | 5.5 | **3.0** | 3.0 | +2.5 | 5.5 ≠ 3.0 |
-| Salah (Liverpool) | Everton | +0.5 | 5.0 | **3.5** | 3.0 | +2.0 | 5.5 ≠ 3.5 |
-| Isak (Newcastle) | Bournemouth | 0 | 4.5 | **2.5** | 2.5 | +2.0 | 4.5 ≠ 2.5 |
+| Player             | GW33 opp    | offset | form_now | ep_this (API) | form_deadline (back-solved) | Δ form | ep_this if dynamic |
+| ------------------ | ----------- | ------ | -------- | ------------- | --------------------------- | ------ | ------------------ |
+| Son (Spurs)        | Brighton    | 0      | 6.0      | **3.5**       | 3.5                         | +2.5   | 6.0 ≠ 3.5          |
+| Rashford (Man Utd) | Chelsea     | 0      | 5.5      | **3.0**       | 3.0                         | +2.5   | 5.5 ≠ 3.0          |
+| Salah (Liverpool)  | Everton     | +0.5   | 5.0      | **3.5**       | 3.0                         | +2.0   | 5.5 ≠ 3.5          |
+| Isak (Newcastle)   | Bournemouth | 0      | 4.5      | **2.5**       | 2.5                         | +2.0   | 4.5 ≠ 2.5          |
 
 All four players' teams had played by 04-21, each had event_points ≥ 15, and each had form that has demonstrably moved by +2.0 to +2.5 since the deadline. `ep_this` has moved by 0.0 in every case. The deadline-time form value is what `ep_this` was computed from; the API still returns that original scalar.
 
@@ -111,12 +111,12 @@ These numbers are real but do not imply lookahead. The dataset is dominated by p
 
 Computed on the vaastav 2024-25 `merged_gw.csv` (DGW-deduplicated, 3 missing-xP GWs excluded):
 
-| Filter | N | corr(xP, total_points) |
-|---|---|---|
-| All players | 25,059 | **0.72** |
-| Played (minutes > 0) | 10,565 | **0.59** |
-| Started (minutes ≥ 60) | 7,144 | **0.55** |
-| Expected to start (xP ≥ 2) | 6,218 | **0.47** |
+| Filter                     | N      | corr(xP, total_points) |
+| -------------------------- | ------ | ---------------------- |
+| All players                | 25,059 | **0.72**               |
+| Played (minutes > 0)       | 10,565 | **0.59**               |
+| Started (minutes ≥ 60)     | 7,144  | **0.55**               |
+| Expected to start (xP ≥ 2) | 6,218  | **0.47**               |
 
 A post-match leak would push correlation toward 1.0 for players who played — because xP would "know" the outcome. Instead the correlation **drops by a third** when you filter to players who actually played, exactly as expected for a pre-match estimate: easy "xP=0, scored 0" pairings vanish, and the task collapses to predicting a high-variance stochastic quantity from pre-match features.
 
@@ -127,7 +127,7 @@ Two complementary tests sharpen this:
 
 MAE between `xP` and same-GW `total_points` for players who played: **1.65 points.** A post-match-contaminated signal would have MAE ≈ 0.
 
-The 0.75 figure for `corr(xP, form)` — low vs 0.98 for live `ep_this` — is also explained without invoking lookahead. `form` in `merged_gw.csv` is a post-scrape snapshot: for a given row, it usually reflects form *after* that GW's matches, whereas `xP` was computed against deadline-time form. The two quantities are from different moments in the GW lifecycle. Correlating them across thousands of rows introduces a 30-day rolling lag, reducing the live 0.98 toward 0.75. This is an artefact of the merge, not of the source value.
+The 0.75 figure for `corr(xP, form)` — low vs 0.98 for live `ep_this` — is also explained without invoking lookahead. `form` in `merged_gw.csv` is a post-scrape snapshot: for a given row, it usually reflects form _after_ that GW's matches, whereas `xP` was computed against deadline-time form. The two quantities are from different moments in the GW lifecycle. Correlating them across thousands of rows introduces a 30-day rolling lag, reducing the live 0.98 toward 0.75. This is an artefact of the merge, not of the source value.
 
 ---
 
