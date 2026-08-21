@@ -73,13 +73,23 @@ _ROLLING_SPECS: list[tuple[str, str, int, str]] = [
     ("transfers_in_rolling_5", "transfers_in", 5, "mean"),
     ("transfers_out_rolling_3", "transfers_out", 3, "mean"),
     ("transfers_out_rolling_5", "transfers_out", 5, "mean"),
-    # Detailed stats from old seasons (2016-17 to 2018-19 only)
+    # Detailed stats from old seasons (2016-17 to 2018-19 only).
+    # tackles/recoveries ALSO exist 2025-26+ (DEFCON era), so those two
+    # rolling features light up again for recent seasons.
     ("fpl_key_passes_rolling_5", "key_passes", 5, "mean"),
     ("tackles_rolling_5", "tackles", 5, "mean"),
     ("completed_passes_rolling_5", "completed_passes", 5, "mean"),
     ("big_chances_created_rolling_5", "big_chances_created", 5, "mean"),
     ("recoveries_rolling_5", "recoveries", 5, "mean"),
     ("dribbles_rolling_5", "dribbles", 5, "mean"),
+    # DEFCON-era stats (2025-26+): defensive_contribution is the awarded
+    # DEFCON stat per match; cbit/cbirt are derived threshold trackers
+    # (DEF scores at 10 CBIT, MID/FWD at 12 CBIRT) built pre-loop.
+    ("defcon_rolling_3", "defensive_contribution", 3, "mean"),
+    ("defcon_rolling_5", "defensive_contribution", 5, "mean"),
+    ("cbi_rolling_5", "clearances_blocks_interceptions", 5, "mean"),
+    ("cbit_rolling_5", "cbit", 5, "mean"),
+    ("cbirt_rolling_5", "cbirt", 5, "mean"),
 ]
 
 # Columns that get summed during DGW aggregation
@@ -93,6 +103,8 @@ _NUMERIC_SUM_COLS = [
     # Old-season detailed stats (2016-19 only, NaN for newer seasons)
     "key_passes", "tackles", "completed_passes",
     "big_chances_created", "recoveries", "dribbles",
+    # DEFCON-era stats (2025-26+, NaN for older seasons)
+    "defensive_contribution", "clearances_blocks_interceptions",
 ]
 
 # Columns that are floats in the raw data and get summed during DGW agg
@@ -169,6 +181,14 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
     # 2. Sort and compute rolling features per player
     # ------------------------------------------------------------------
     df = df.sort_values(["element", "GW"]).reset_index(drop=True)
+
+    # Derived DEFCON threshold trackers (2025-26+ columns; NaN elsewhere):
+    # cbit = CBI + tackles (DEF DEFCON threshold is 10 CBIT);
+    # cbirt = cbit + recoveries (MID/FWD threshold is 12 CBIRT).
+    if {"clearances_blocks_interceptions", "tackles"} <= set(df.columns):
+        df["cbit"] = df["clearances_blocks_interceptions"] + df["tackles"]
+        if "recoveries" in df.columns:
+            df["cbirt"] = df["cbit"] + df["recoveries"]
 
     grouped = df.groupby("element")
 

@@ -88,7 +88,20 @@ def _report(preds: np.ndarray, holdout: pd.DataFrame, label: str) -> dict:
     ]
     mean_gw_corr = float(np.nanmean(gw_corrs))
     print(f"  Mean per-GW corr: {mean_gw_corr:.4f}")
-    return {"mae": mae, "rmse": rmse, "corr": corr, "gw_corr": mean_gw_corr}
+
+    out = {"mae": mae, "rmse": rmse, "corr": corr, "gw_corr": mean_gw_corr}
+    # Outcome-stratified breakdown (Zeros/Blanks/Tickers/Haulers)
+    try:
+        from fpl_rl.prediction.stratified_metrics import (
+            format_report, stratified_metrics,
+        )
+
+        strat = stratified_metrics(actual[valid], preds[valid])
+        print(format_report(strat, label=f"stratified: {label}"))
+        out["stratified"] = strat
+    except Exception as exc:  # metrics module optional — never break training
+        print(f"  (stratified metrics unavailable: {exc})")
+    return out
 
 
 def main() -> None:
@@ -151,7 +164,7 @@ def main() -> None:
     metrics["train_seasons"] = PROD_SEASONS
     metrics["params"] = PARAMS
     (staging / "training_report.json").write_text(
-        json.dumps(metrics, indent=2), encoding="utf-8"
+        json.dumps(metrics, indent=2, default=float), encoding="utf-8"
     )
     meta_path = staging / "metadata.json"
     if meta_path.exists():
