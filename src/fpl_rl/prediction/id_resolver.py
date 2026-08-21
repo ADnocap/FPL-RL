@@ -11,13 +11,14 @@ logger = logging.getLogger(__name__)
 
 SEASON_COLUMNS = [
     "16-17", "17-18", "18-19", "19-20", "20-21",
-    "21-22", "22-23", "23-24", "24-25",
+    "21-22", "22-23", "23-24", "24-25", "25-26", "26-27",
 ]
 
 SEASON_TO_COL = {
     "2016-17": "16-17", "2017-18": "17-18", "2018-19": "18-19",
     "2019-20": "19-20", "2020-21": "20-21", "2021-22": "21-22",
     "2022-23": "22-23", "2023-24": "23-24", "2024-25": "24-25",
+    "2025-26": "25-26", "2026-27": "26-27",
 }
 
 
@@ -78,6 +79,25 @@ class IDResolver:
                         eid_int = int(eid)
                         self._season_eid_to_code[(season, eid_int)] = code
                         self._code_to_season_eid[(code, season)] = eid_int
+
+        # Live-season supplements: data/id_maps/live_element_code_{season}.csv
+        # (columns: element_id, code, web_name) written by the fpl_live collector
+        # from bootstrap-static's own `code` field. Covers players missing from
+        # the ChrisMusson map (new signings, current season not yet mapped).
+        for supp_path in sorted((data_dir / "id_maps").glob("live_element_code_*.csv")):
+            season = supp_path.stem.replace("live_element_code_", "")
+            supp = pd.read_csv(supp_path)
+            n_new = 0
+            for _, row in supp.iterrows():
+                code = int(row["code"])
+                eid = int(row["element_id"])
+                if (season, eid) not in self._season_eid_to_code:
+                    self._season_eid_to_code[(season, eid)] = code
+                    self._code_to_season_eid[(code, season)] = eid
+                    n_new += 1
+                if code not in self._code_to_name:
+                    self._code_to_name[code] = str(row.get("web_name", ""))
+            logger.info("IDResolver: live supplement %s added %d mappings", season, n_new)
 
         logger.info(
             "IDResolver: %d codes, %d understat, %d fbref mappings",

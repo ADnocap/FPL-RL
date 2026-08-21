@@ -46,5 +46,5 @@ src/fpl_rl/data-src.zip
 # Other
 colab/*
 node_modules/
-.claude/
+.claude/settings.local.json
 ADnocap/

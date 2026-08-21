@@ -73,7 +73,14 @@ AVAILABLE_SEASONS = [
     "2022-23",
     "2023-24",
     "2024-25",
+    "2025-26",
+    "2026-27",
 ]
+
+# The season currently being played (live operation). Vaastav has no per-GW
+# data for it — data/raw/2026-27/ is built locally from the official FPL API
+# by fpl_rl.data.collectors.fpl_live.
+CURRENT_SEASON = "2026-27"
 
 # Vaastav GitHub raw URL base
 VAASTAV_BASE_URL = (

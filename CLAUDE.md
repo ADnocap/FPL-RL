@@ -6,74 +6,137 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+pip install -e ".[dev]"          # also: .[prediction] .[optimizer] .[data] .[webapp]
 
-# Run all tests
+# Run all tests (351 as of 2026-08)
 pytest
 
-# Run only engine unit tests
-pytest tests/test_engine/ -v
-
-# Run only env unit tests
-pytest tests/test_env/ -v
-
-# Run integration tests (includes SB3 smoke test)
-pytest tests/test_integration/ -v
-
-# Run a single test file
-pytest tests/test_engine/test_chips.py -v
+# Run one area
+pytest tests/test_engine/ -v     # also: test_env, test_optimizer, test_prediction,
+                                 #       test_training, test_integration
 
 # Run a single test class or method
 pytest tests/test_engine/test_chips.py::TestActivateChip::test_one_chip_per_gw -v
 ```
 
+## Live-season operation (2026-27)
+
+The repo runs live for the 2026-27 season. Weekly loop, before each GW deadline:
+
+```bash
+python scripts/gameweek.py --team-id <FPL_ENTRY_ID>
+```
+
+This snapshots bootstrap-static pre-deadline (captures `ep_next`/prices/ownership —
+unrecoverable later), refreshes element summaries, rebuilds `data/raw/2026-27/` in
+vaastav format from the official FPL API (vaastav stopped weekly updates after
+2024-25), synthesizes feature rows for the upcoming GW, predicts with the LightGBM
+model, fetches the real team state (public entry API), and prints recommended
+transfers / lineup / captain. `--fresh-squad` picks a full squad (GW1/wildcard).
+
+Retrain the model of record with `python scripts/train_predictor.py`
+(→ `models/prod_2026-27/`; the only committed reproducible training recipe).
+
 ## Architecture
 
-The codebase has a strict two-layer separation:
+`src/fpl_rl/` has 7 subpackages with a strict layering:
 
-**`engine/`** — Pure game logic with **zero Gymnasium dependency**. Stateless: `step(GameState, EngineAction) → (GameState, StepResult)`. Never mutates input state — all copies are explicit. This module can be used standalone by the MILP optimizer (Stage 2) without any RL infrastructure.
+**`engine/`** — Pure game logic, **zero Gymnasium dependency**. Stateless:
+`step(GameState, EngineAction) → (GameState, StepResult)`; never mutates inputs.
+Scoring is a lookup of recorded `total_points` (historical replay — cannot
+simulate an unplayed GW).
 
-**`env/`** — Thin Gymnasium wrapper. Handles action encoding/decoding (`MultiDiscrete → EngineAction`), observation building (`GameState → flat numpy array`), reward computation, and masking for MaskablePPO.
+**`env/`** — Thin Gymnasium wrappers. `FPLEnv` (18-dim MultiDiscrete) and
+`HybridFPLEnv` (`hybrid_action_space.py`, chip-only `MultiDiscrete([6])`; the MILP
+picks players). Action masking for MaskablePPO.
 
-**`data/`** — Historical data loading from vaastav/Fantasy-Premier-League GitHub repo. `SeasonDataLoader` pre-indexes by `(element_id, gw)` for O(1) lookups and handles DGW aggregation (sums points across multiple fixtures).
+**`data/`** — `SeasonDataLoader` (pre-indexed `(element_id, gw)` lookups, DGW
+aggregation, cross-season position/team backfill) + `collectors/` for 7 sources:
+vaastav, understat, fpl_api, fbref, fotmob, odds, id_mapping, plus
+**`fpl_live.py`** (`LiveFPLCollector`) which builds vaastav-format season files
+directly from the FPL API for the current season.
 
-### Key Data Flow
+**`prediction/`** — LightGBM point predictor: `feature_pipeline.py` orchestrates
+feature modules (`features/vaastav|understat|prior_season|opponent|odds|players_raw`),
+`id_resolver.py` (element_id ↔ stable code ↔ understat/fbref ids; auto-loads
+`data/id_maps/live_element_code_*.csv` supplements built from bootstrap `code`),
+`model.py` (4 boosters, one per position; NaN-tolerant; selects features by name),
+`integration.py` bridges predictions to the ObservationBuilder.
+
+**`optimizer/`** — PuLP MILP suite: `squad_selection.py` (initial 15),
+`transfer_optimizer.py` (weekly transfers vs a GameState: bank, selling prices,
+FTs, hit costs), `lineup_selector.py` (XI+captain), `backtest.py` (full-season
+replay). Solver: PULP_CBC_CMD. Objective is single-GW; no chip scheduling.
+
+**`live/`** — Live-season glue: `entry.py` (public entry API → GameState with
+reconstructed purchase/selling prices, FT bank simulation, chips),
+`pool.py` (candidates from bootstrap with availability filtering/scaling),
+`predict.py` (upcoming-GW model predictions).
+
+**`training/`** — `MultiSeasonFPLEnv`, callbacks, RL training infra (research
+path; the operational path is prediction + MILP).
+
+`webapp/` — FastAPI + React historical-replay visualizer (not live).
+`cluster/` — SLURM scripts for the LaRuche cluster.
+
+### Key Data Flow (live season)
 
 ```
-MultiDiscrete action → ActionEncoder.decode() → EngineAction
-                                                      ↓
-GameState + EngineAction → FPLGameEngine.step() → (new GameState, StepResult)
-                                                      ↓
-new GameState → ObservationBuilder.build() → flat numpy obs (1363,)
-StepResult → RewardCalculator.calculate() → scalar reward
+FPL API ──LiveFPLCollector──> data/raw/2026-27/ (vaastav format + synthetic
+                              upcoming-GW rows, xP from pre-deadline snapshots)
+        ──FeaturePipeline──> feature rows for upcoming GW
+        ──PointPredictor──> element_id → xPts
+entry API ──fetch_entry_state──> GameState (squad/bank/FTs/chips)
+(GameState, candidates) ──optimize_transfers──> transfers/lineup/captain
 ```
 
-### Spaces
+### Spaces (RL research path)
 
-- **Action**: `MultiDiscrete([6, 15,50, 15,50, 15,50, 15,50, 15,50, 15, 15, 8, 15, 15, 15, 6])` = 5 transfer pairs, 18 dims
-- **Observation**: `Box(1363,)` = 15×24 squad + 50×19 pool + 53 global features
+- **Action**: `MultiDiscrete([6, 15,50 ×5 pairs, 15, 15, 8, 15, 15, 15, 6])` = 18 dims
+- **Observation**: `Box(1363,)` = 15×24 squad + 50×19 pool + 53 global
 
-### Important Conventions
+## Important Conventions
 
-- **Prices are in tenths**: `100 = £10.0m`. All price math uses integers to avoid floating-point issues.
-- **Lineup/bench are indices into `Squad.players`**, not element_ids. `Squad.lineup = [0, 2, 3, ...]` means players[0], players[2], etc.
-- **Invalid actions don't crash**: `FPLEnv.step()` catches ValueError from the engine and falls back to no-op.
-- **Candidate pool is rebuilt every GW** in both `reset()` and `step()`.
+- **Prices are in tenths**: `100 = £10.0m`. All price math is integer.
+- **Lineup/bench are indices into `Squad.players`**, not element_ids.
+- **Invalid actions don't crash**: `FPLEnv.step()` catches ValueError → no-op.
+- **Point-in-time discipline**: post-match features come from gw-1; pre-match
+  (price, selected, was_home, xP) from the current gw. `ep_this`/`ep_next` is
+  point-in-time safe but must be snapshotted in its GW window (see EP_FORMULA.md —
+  xP is NOT a lookahead leak; MEMORY notes saying otherwise are outdated).
+- **Live rebuilds replace synthetic rows**: `build_season_files()` regenerates
+  merged_gw.csv each run; upcoming-GW synthetic rows (stats zeroed) are replaced
+  by real rows after the GW completes.
+
+## Data sources & keys
+
+No paid keys required. FPL API, understat (understatapi ≥0.7.1 — the site moved
+to AJAX endpoints in Dec 2025), FotMob CDN (`data.fotmob.com`, season IDs incl.
+2025-26=27110, 2026-27=36781), football-data.co.uk (free Pinnacle/avg odds
+backfill: `scripts/collect_football_data_odds.py`), ChrisMusson ID map. The Odds
+API live tier is free (500 credits/mo; 1 credit/GW) — key in `.env` as
+`ODDS_API_KEY` (optional; odds features add ~nothing per our ablation). FBref is
+Cloudflare-blocked since 2026 — FotMob covers the fallback features.
+
+## FPL Rules Encoded (verified for 2026/27)
+
+- 8 valid formations, always 1 GK; 15-player squad; 3-per-club; £100.0m start
+- 4 chips × 2 halves (GW1-19 / GW20-38); one chip per GW; first-half chips expire
+  after GW19; **Wildcard & Free Hit have start_event=2 (not playable GW1)**;
+  Free Hit cannot be used in both GW19 and GW20
+- FT banking to max 5; WC/FH do NOT reset banked FTs; hits −4/extra transfer
+- Selling price = purchase + floor(appreciation/2)
+- Auto-subs walk bench in priority order respecting formations; captain failover
+  when captain didn't play (0 min and no card) or left the lineup
+- 2026/27 scoring unchanged from 2025/26 (incl. DEFCON defensive contribution:
+  2 pts DEF/MID/FWD at thresholds, 0 for GK); BPS internals overhauled (bonus
+  distribution only); GW scores now final 09:00 UK the day after the last match
+  (don't scrape final stats before then)
 
 ## Test Data Pattern
 
-Tests use hand-crafted CSVs in `tests/test_data/` (18 players, 2 GWs). The `SeasonDataLoader.__init__` is monkey-patched in `conftest.py` to skip downloads and load from a temp directory instead. **Critical constraint**: sample test data must have max 3 players per team (club limit rule), and the `team` column in `merged_gw.csv` and `cleaned_players.csv` must be consistent.
-
-When adding new test scenarios: add rows to the sample CSVs or create new fixture CSV files rather than mocking the loader methods.
-
-## FPL Rules Encoded
-
-Key 2025/26 rules implemented in the engine:
-- 8 valid formations (3-4-3 through 5-4-1), always 1 GK in starting XI
-- 4 chips × 2 halves (GW1-19, GW20-38), one chip per GW, unused first-half chips expire after GW19
-- Free transfer banking up to 5 (Wildcard/Free Hit do NOT reset banked transfers)
-- Selling price = purchase + floor(appreciation / 2)
-- Transfer hit = 4 points per extra transfer beyond free allowance
-- Auto-substitution walks bench in priority order, respects formation validity
-- Captain failover: if captain has 0 minutes, vice-captain gets the multiplier
-- "Played" = 1+ minutes OR received a card (for auto-sub purposes)
+Tests use hand-crafted CSVs in `tests/test_data/` (18 players, 2 GWs).
+`SeasonDataLoader.__init__` is monkey-patched in `conftest.py` to skip downloads.
+**Constraints**: max 3 players per team; the `team` column in `merged_gw.csv` and
+`cleaned_players.csv` must be consistent. Add scenarios by adding CSV rows/files,
+not by mocking loader methods.

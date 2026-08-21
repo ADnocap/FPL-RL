@@ -2,7 +2,18 @@
 
 Predict-and-optimize system for Fantasy Premier League that combines LightGBM point predictions with MILP squad optimization, achieving backtest scores above the all-time human record.
 
-Replays historical seasons (2016-17 to 2024-25) using real player data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League), with full FPL game rules encoded as a Gymnasium environment compatible with [MaskablePPO](https://sb3-contrib.readthedocs.io/en/master/modules/ppo_mask.html).
+Replays historical seasons (2016-17 to 2025-26) using real player data from [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League), with full FPL game rules encoded as a Gymnasium environment compatible with [MaskablePPO](https://sb3-contrib.readthedocs.io/en/master/modules/ppo_mask.html).
+
+**Now running live for the 2026-27 season** — current-season data is built directly
+from the official FPL API (`LiveFPLCollector`), and the weekly loop is one command:
+
+```bash
+python scripts/gameweek.py --team-id <YOUR_FPL_ENTRY_ID>
+# GW1 / wildcard from scratch:
+python scripts/gameweek.py --fresh-squad
+# Retrain the model of record (10 seasons through 2025-26):
+python scripts/train_predictor.py
+```
 
 ## Results (2024-25 holdout season)
 
@@ -134,14 +145,13 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 ### Action Space (Hybrid)
 
-`MultiDiscrete([6, 6])` -- 12 total mask length
+`MultiDiscrete([6])` -- 6 total mask length
 
 | Index | Dimension | Range | Meaning |
 |-------|-----------|-------|---------|
-| 0 | transfer_count | 0-5 | Upper bound on transfers (MILP optimizes within this) |
-| 1 | chip | 0-5 | 0=none, 1=WC, 2=FH, 3=BB, 4=TC, 5=reserved |
+| 0 | chip | 0-5 | 0=none, 1=WC, 2=FH, 3=BB, 4=TC, 5=reserved |
 
-The MILP optimizer handles all player selection, lineup, captain, and bench decisions.
+The MILP optimizer handles all transfer, player selection, lineup, captain, and bench decisions.
 
 ### Action Space (Full RL)
 
@@ -165,7 +175,7 @@ reward = net_points + 0.1 * (net_points - gw_average) + 0.05 * team_value_change
 
 ## FPL Rules Encoded
 
-The engine implements 2025/26 FPL rules with 338 passing tests:
+The engine implements 2025/26+ FPL rules (verified unchanged for 2026/27 scoring) with 351 passing tests:
 
 - **8 valid formations** (3-4-3 through 5-4-1), always 1 GK in starting XI
 - **4 chips x 2 halves** (GW1-19, GW20-38) -- one chip per GW, unused first-half chips expire after GW19
@@ -192,7 +202,7 @@ The engine implements 2025/26 FPL rules with 338 passing tests:
 ## Testing
 
 ```bash
-pytest                            # All 338 tests
+pytest                            # All 351 tests
 pytest tests/test_engine/ -v      # Engine unit tests
 pytest tests/test_env/ -v         # Env unit tests
 pytest tests/test_integration/ -v # SB3 smoke test
@@ -222,4 +232,7 @@ runs/best_hybrid_model.zip
 - [x] **Stage 2:** PuLP/CBC MILP optimizer for squad selection and transfers
 - [x] **Stage 3:** Multi-season MaskablePPO training + hybrid RL/MILP environment
 - [ ] **Stage 4:** Multi-season holdout backtesting with confidence intervals
-- [ ] **Stage 5:** Live deployment for 2025-26 season
+- [x] **Stage 5:** Live deployment (2026-27 season) — API-native data (`fpl_live.py`),
+      live team state (`live/entry.py`), weekly driver (`scripts/gameweek.py`),
+      committed training recipe (`scripts/train_predictor.py`)
+- [ ] **Stage 6:** Multi-GW planning horizon + chip scheduler in the MILP

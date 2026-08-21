@@ -62,10 +62,12 @@ CANONICAL_COLUMNS = {
 }
 
 # Seasons where position column exists in merged_gw.csv
-SEASONS_WITH_POSITION = {"2020-21", "2021-22", "2022-23", "2023-24", "2024-25"}
+SEASONS_WITH_POSITION = {
+    "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26", "2026-27",
+}
 
 # Seasons where expected stats (xG, xA) exist
-SEASONS_WITH_EXPECTED = {"2022-23", "2023-24", "2024-25"}
+SEASONS_WITH_EXPECTED = {"2022-23", "2023-24", "2024-25", "2025-26", "2026-27"}
 
 # Position mapping from cleaned_players.csv element_type field
 ELEMENT_TYPE_TO_POSITION = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}

@@ -25,6 +25,8 @@ SEASON_TO_FOTMOB_ID: dict[str, str] = {
     "2022-23": "17664",
     "2023-24": "20720",
     "2024-25": "23685",
+    "2025-26": "27110",
+    "2026-27": "36781",
 }
 
 # Premier League = league 47 on FotMob
