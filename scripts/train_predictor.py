@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -114,7 +115,7 @@ def main() -> None:
     # one player with points (appearance minimum), so an all-zero-target
     # (season, GW) group can only be synthetic.
     gw_max_target = df.groupby(["season", "GW"])["target"].transform("max")
-    synthetic = gw_max_target <= 0
+    synthetic = ~(gw_max_target > 0)  # catches all-zero AND all-NaN groups
     if synthetic.any():
         dropped = df.loc[synthetic, ["season", "GW"]].drop_duplicates()
         print(f"Dropping {int(synthetic.sum())} synthetic/unplayed rows: "
@@ -139,14 +140,33 @@ def main() -> None:
     prod = PointPredictor(params=PARAMS, early_stopping_rounds=50)
     prod.train(train_df, val_df)
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    prod.save(args.out)
+    # Atomic promote: train into a staging dir, keep the previous model as
+    # a .prev rollback, then rename — readers (gameweek.py) never see a torn
+    # model dir, and the old model+report survive for comparison.
+    staging = args.out.with_name(args.out.name + ".staging")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    prod.save(staging)
     metrics["train_seasons"] = PROD_SEASONS
     metrics["params"] = PARAMS
-    (args.out / "training_report.json").write_text(
+    (staging / "training_report.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
     )
-    print(f"\nProduction model saved to {args.out}")
+    meta_path = staging / "metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["train_seasons"] = PROD_SEASONS
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    prev = args.out.with_name(args.out.name + ".prev")
+    if args.out.exists():
+        if prev.exists():
+            shutil.rmtree(prev)
+        args.out.rename(prev)
+    staging.rename(args.out)
+    print(f"\nProduction model saved to {args.out} "
+          f"(previous model kept at {prev.name})")
 
     fi = prod.feature_importance()
     if not fi.empty:

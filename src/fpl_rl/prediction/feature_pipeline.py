@@ -432,14 +432,22 @@ class FeaturePipeline:
 
     @staticmethod
     def _load_csv_safe(path: Path) -> pd.DataFrame:
-        """Load a CSV, returning empty DataFrame if missing."""
+        """Load a CSV, returning empty DataFrame if missing.
+
+        Drops exact full-row duplicates — always source-data defects (real DGW
+        rows differ by fixture id) that would double-count in per-GW sums.
+        """
         if not path.exists():
             return pd.DataFrame()
         try:
-            return pd.read_csv(path, encoding="utf-8", on_bad_lines="skip")
+            return pd.read_csv(
+                path, encoding="utf-8", on_bad_lines="skip"
+            ).drop_duplicates()
         except UnicodeDecodeError:
             try:
-                return pd.read_csv(path, encoding="latin-1", on_bad_lines="skip")
+                return pd.read_csv(
+                    path, encoding="latin-1", on_bad_lines="skip"
+                ).drop_duplicates()
             except Exception:
                 return pd.DataFrame()
         except Exception:

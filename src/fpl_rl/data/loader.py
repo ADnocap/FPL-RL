@@ -62,6 +62,11 @@ class SeasonDataLoader:
         path = self._season_dir / "gws" / "merged_gw.csv"
         df = _read_csv_safe(path, on_bad_lines="skip")
 
+        # Exact full-row duplicates are always source-data defects (legitimate
+        # DGW rows differ by fixture id) and would double-count in the
+        # per-(element, gw) sums — e.g. 10 dupe rows in vaastav's 2025-26 file.
+        df = df.drop_duplicates()
+
         # Fill missing expected stats columns with 0
         if self.season not in SEASONS_WITH_EXPECTED:
             for col in [

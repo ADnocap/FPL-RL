@@ -13,7 +13,8 @@ Weekly transfers for a real team:
 
 Useful flags:
     --skip-refresh      don't re-download element summaries (~10 min)
-    --model-dir PATH    predictor to use (default models/full_pregame)
+    --model-dir PATH    predictor to use (default models/prod_2026-27 when it
+                        exists, else models/full_pregame)
     --max-transfers N   cap transfers considered (default: optimizer decides)
     --chip NAME         evaluate with a chip (wildcard/free_hit/bench_boost/
                         triple_captain)
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -85,6 +87,18 @@ def main() -> None:
                         help="with --apply: actually commit transfers and lineup")
     args = parser.parse_args()
 
+    # Default --team-id from .env (FPL_TEAM_ID)
+    if args.team_id is None and not args.fresh_squad:
+        env_path = REPO_ROOT / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    k, _, v = line.partition("=")
+                    os.environ.setdefault(k.strip(), v.strip())
+        if os.environ.get("FPL_TEAM_ID"):
+            args.team_id = int(os.environ["FPL_TEAM_ID"])
+            print(f"Using FPL_TEAM_ID={args.team_id} from .env")
+
     collector = LiveFPLCollector(data_dir=args.data_dir, season=args.season)
     bootstrap = collector.fetch_bootstrap()
     fixtures = collector.fetch_fixtures()
@@ -97,6 +111,23 @@ def main() -> None:
     # Deadline info
     event = next(e for e in bootstrap["events"] if e["id"] == gw)
     print(f"\n=== Planning GW{gw} — deadline {event['deadline_time']} ===\n")
+
+    # 0. Fetch live team state FIRST (fail fast, before expensive data work)
+    entry_state = None
+    if args.team_id is not None and not args.fresh_squad:
+        from fpl_rl.live.entry import fetch_entry_state
+
+        try:
+            entry_state = fetch_entry_state(args.team_id, bootstrap)
+        except ValueError as exc:
+            print(f"Cannot load team {args.team_id}: {exc}")
+            print("Hint: before GW1 completes, use --fresh-squad instead.")
+            return
+        gs_chips = entry_state.game_state.chips
+        if args.chip and not gs_chips.is_available(args.chip, gw):
+            print(f"ERROR: chip '{args.chip}' is not available for GW{gw} "
+                  "(already used, expired, or blocked this GW).")
+            return
 
     # 1. Data refresh
     if not args.skip_build:
@@ -147,9 +178,6 @@ def main() -> None:
         result = select_squad(candidates, budget=args.budget)
         header = f"Fresh squad (cost {result.total_cost / 10:.1f}m)"
     else:
-        from fpl_rl.live.entry import fetch_entry_state
-
-        entry_state = fetch_entry_state(args.team_id, bootstrap)
         gs = entry_state.game_state
         print(f"Team: {entry_state.team_name}  |  "
               f"{entry_state.overall_points} pts, rank "

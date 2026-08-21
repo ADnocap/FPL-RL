@@ -11,10 +11,10 @@ description: Run the weekly FPL pre-deadline routine — refresh live data, pred
    → events → the `is_next` event's `deadline_time`. Tell the user how long is left.
    If < 15 minutes, run with `--skip-refresh` (saves ~10 min of element downloads).
 
-2. **Run the driver** (team id: ask the user once, then store it in `.env` as
-   `FPL_TEAM_ID` and reuse):
+2. **Run the driver** (`FPL_TEAM_ID` is already in `.env` — entry 8737706 —
+   and is picked up automatically):
    ```
-   python scripts/gameweek.py --team-id <FPL_TEAM_ID>
+   python scripts/gameweek.py
    ```
    - GW1 or wildcard-from-scratch: add `--fresh-squad`
    - Chip evaluation: re-run with `--chip wildcard` / `free_hit` / `bench_boost` /
@@ -30,9 +30,12 @@ description: Run the weekly FPL pre-deadline routine — refresh live data, pred
    - DGW/BGW: check fixture counts for GW in `data/raw/2026-27/fixtures.csv`.
 
 4. **Present**: transfers (out→in with prices), XI + formation, captain/vice,
-   bench order, expected points, hit cost if any. Remind the user to apply on
-   fantasy.premierleague.com before the deadline (or via the API automation in
-   scripts/apply_team.py if it exists and they've set their session cookie).
+   bench order, expected points, hit cost if any. Then apply via the API:
+   `python scripts/gameweek.py --apply` (dry-run validation), then
+   `--apply --yes` to commit for real. Auth is `FPL_REFRESH_TOKEN` in `.env`
+   (auto-rotating; see src/fpl_rl/live/auth.py if it ever needs re-extracting).
+   When recommending players by name, ALWAYS disambiguate with club + position
+   (two Palmers exist: Cole Palmer CHE MID vs Alex Palmer IPS GK).
 
 ## Failure modes
 

@@ -134,6 +134,14 @@ class LiveFPLCollector(BaseCollector):
         for ev in bootstrap.get("events", []):
             if ev.get("is_current") and not ev.get("finished"):
                 return ev["id"], "ep_this"
+        # Post-deadline API lag: the deadline just passed but FPL hasn't
+        # flipped is_current/is_next yet — target the first unfinished event.
+        for ev in bootstrap.get("events", []):
+            if not ev.get("finished"):
+                deadline = datetime.fromisoformat(
+                    ev["deadline_time"].replace("Z", "+00:00")
+                )
+                return ev["id"], "ep_next" if deadline > now else "ep_this"
         return None, "ep_next"
 
     def snapshot_predeadline(self) -> int | None:
@@ -146,6 +154,28 @@ class LiveFPLCollector(BaseCollector):
             return None
 
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+        # Never overwrite a pre-deadline snapshot after the deadline has
+        # passed — the pre-deadline capture (ep, prices, ownership) is the
+        # point-in-time record and is unrecoverable.
+        meta_path = self.snapshot_dir / f"gw{gw}_meta.json"
+        if meta_path.exists():
+            try:
+                old_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                taken = datetime.fromisoformat(old_meta["taken_utc"])
+                event = next(e for e in bootstrap["events"] if e["id"] == gw)
+                deadline = datetime.fromisoformat(
+                    event["deadline_time"].replace("Z", "+00:00")
+                )
+                now = datetime.now(timezone.utc)
+                if taken <= deadline < now:
+                    logger.info(
+                        "Live snapshot: GW%d pre-deadline snapshot preserved "
+                        "(deadline passed, not overwriting)", gw,
+                    )
+                    return gw
+            except (KeyError, ValueError, StopIteration):
+                pass  # unreadable meta — take a fresh snapshot
         meta = {
             "gw": gw,
             "ep_field": ep_field,

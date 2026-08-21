@@ -23,14 +23,19 @@ description: Retrain the FPL point-prediction model of record with the latest da
    - Mid-season, consider adding completed 2026-27 GWs to the training set by
      extending PROD_SEASONS in the script.
 
-3. **Promote**: `scripts/gameweek.py` automatically prefers `models/prod_2026-27/`.
-   Keep the old model dir until the new one has beaten it on a full holdout.
+3. **Promote**: automatic and atomic — the script trains into a staging dir,
+   keeps the outgoing model at `models/prod_2026-27.prev` (rollback), then
+   renames. Compare `training_report.json` against `prod_2026-27.prev/`'s; if
+   the new model is worse, roll back by swapping the directories.
 
 ## Quality bars (history)
 
 - Old leaky-xP model: inflated (don't compare against it)
 - no_xp (103 feats, ≤2023-24 train): MAE 0.993, per-GW corr 0.591 on 2024-25
 - full_pregame (107 feats incl. legit fpl_xp): per-GW corr ~0.787 on 2024-25
+- **prod_2026-27 (2026-08-21, current): MAE 0.8248, per-GW corr 0.6312 on the
+  2025-26 holdout** (different holdout season than the rows above — only
+  compare like-for-like)
 - Anything materially worse than the current training_report.json = don't promote.
 
 ## Rules that bite
