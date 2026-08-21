@@ -104,6 +104,12 @@ def fetch_entry_state(
     upcoming_gw = current_event + 1
 
     picks_data = _get(f"{FPL_API_BASE}/entry/{team_id}/event/{current_event}/picks/")
+    # Free Hit squads revert after the GW — the picks endpoint permanently
+    # records the temporary FH squad, so read the REAL squad from the GW before.
+    if picks_data.get("active_chip") == "freehit" and current_event > 1:
+        picks_data = _get(
+            f"{FPL_API_BASE}/entry/{team_id}/event/{current_event - 1}/picks/"
+        )
     picks = picks_data["picks"]
     entry_history = picks_data.get("entry_history", {})
 

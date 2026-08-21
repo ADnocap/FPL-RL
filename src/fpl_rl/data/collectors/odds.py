@@ -55,6 +55,15 @@ _ODDS_TO_FPL_NAME: dict[str, str] = {
     "Luton Town": "Luton",
     "Ipswich Town": "Ipswich",
     "AFC Bournemouth": "Bournemouth",
+    # football-data.co.uk variants (scripts/collect_football_data_odds.py).
+    # NOTE: FPL itself renames clubs between seasons (Ipswich vs Ipswich Town);
+    # features/odds.py also retries the raw name against the season's team table.
+    "Man United": "Man Utd",
+    "Tottenham": "Spurs",
+    "Sheffield United": "Sheffield Utd",
+    "Coventry": "Coventry City",
+    "Hull": "Hull City",
+    "Ipswich": "Ipswich Town",
 }
 
 

@@ -147,12 +147,19 @@ def optimize_transfers(
             t[k] for k in range(free_transfers, max_possible)
         )
 
-    # Objective
-    prob += (
+    # Objective: XI points + captain double - hits, with chip-aware terms.
+    objective = (
         pulp.lpSum(xp[i] * y[i] for i in range(n))
         + pulp.lpSum(xp[i] * c_var[i] for i in range(n))
         - hit_expr
     )
+    if chip == "bench_boost":
+        # Bench players score too — value the whole 15, not just the XI
+        objective += pulp.lpSum(xp[i] * (x[i] - y[i]) for i in range(n))
+    elif chip == "triple_captain":
+        # Captain counts 3x instead of 2x
+        objective += pulp.lpSum(xp[i] * c_var[i] for i in range(n))
+    prob += objective
 
     # --- Squad constraints ---
     prob += pulp.lpSum(x) == SQUAD_SIZE

@@ -109,6 +109,18 @@ def main() -> None:
     print(f"Features: {len(df)} rows x {len(df.columns)} cols "
           f"in {time.time() - t0:.0f}s")
 
+    # Drop synthetic/unplayed gameweeks: fpl_live's live rebuild writes
+    # upcoming-GW rows with all stats zeroed. A real GW always has at least
+    # one player with points (appearance minimum), so an all-zero-target
+    # (season, GW) group can only be synthetic.
+    gw_max_target = df.groupby(["season", "GW"])["target"].transform("max")
+    synthetic = gw_max_target <= 0
+    if synthetic.any():
+        dropped = df.loc[synthetic, ["season", "GW"]].drop_duplicates()
+        print(f"Dropping {int(synthetic.sum())} synthetic/unplayed rows: "
+              + ", ".join(f"{s} GW{int(g)}" for s, g in dropped.itertuples(index=False)))
+        df = df[~synthetic]
+
     metrics: dict = {}
 
     if not args.no_eval:

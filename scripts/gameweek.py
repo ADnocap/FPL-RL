@@ -108,6 +108,9 @@ def main() -> None:
         )
 
     # 2. Predictions
+    # FPL's EP already embeds chance_of_playing (EP_FORMULA.md), so the pool
+    # must not scale by availability a second time in EP mode.
+    using_ep = args.ep
     if args.ep:
         predictions = ep_reference(bootstrap)
         print("Predictions: FPL EP (ep_next)")
@@ -118,6 +121,7 @@ def main() -> None:
         if not predictions:
             print("WARNING: model produced no predictions — falling back to EP.")
             predictions = ep_reference(bootstrap)
+            using_ep = True
         else:
             print(f"Predictions: {args.model_dir.name} model "
                   f"({len(predictions)} players)")
@@ -127,10 +131,18 @@ def main() -> None:
 
     # 3. Optimize
     if args.fresh_squad or args.team_id is None:
+        if args.apply:
+            print("ERROR: --apply is not supported in fresh-squad mode — the "
+                  "initial squad must be entered on the site; for a wildcard "
+                  "rebuild use --team-id with --chip wildcard (rides on the "
+                  "transfers endpoint).")
+            return
         if not args.fresh_squad:
             print("No --team-id given: running fresh-squad mode.\n")
         candidates = build_live_candidates(
-            bootstrap, predictions, min_chance=args.min_chance
+            bootstrap, predictions,
+            min_chance=args.min_chance,
+            availability_scaling=not using_ep,
         )
         result = select_squad(candidates, budget=args.budget)
         header = f"Fresh squad (cost {result.total_cost / 10:.1f}m)"
@@ -150,6 +162,7 @@ def main() -> None:
         candidates = build_live_candidates(
             bootstrap, predictions,
             min_chance=args.min_chance, always_include=squad_ids,
+            availability_scaling=not using_ep,
         )
         result = optimize_transfers(
             gs, candidates, chip=args.chip, max_transfers=args.max_transfers
@@ -184,6 +197,7 @@ def main() -> None:
         print(f"\nChip evaluated: {args.chip}")
 
     # 5. Optional API submission
+    applied = False
     if args.apply and args.team_id:
         from fpl_rl.live.auth import FPLAuth
         from fpl_rl.live.executor import (
@@ -229,11 +243,15 @@ def main() -> None:
                 auth, args.team_id,
                 result.lineup_element_ids, result.bench_element_ids,
                 result.captain_id, result.vice_captain_id, chip=chip,
+                element_types={
+                    el["id"]: el["element_type"] for el in bootstrap["elements"]
+                },
             )
             print("Lineup/captain APPLIED.")
+            applied = True
 
     print(f"\nDeadline: {event['deadline_time']}"
-          + ("" if (args.apply and args.yes) else
+          + ("" if applied else
              " — apply on fantasy.premierleague.com or re-run with --apply --yes")
           + "\n")
 

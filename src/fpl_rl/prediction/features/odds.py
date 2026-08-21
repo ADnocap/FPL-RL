@@ -108,19 +108,24 @@ def _match_odds_to_teams(
         team (int), gw (not set here), win_prob, draw_prob, loss_prob
     Two rows per match (one per team).
     """
+    def _lookup(raw_name: str) -> int | None:
+        # Mapped name first, then the raw source name — FPL renames clubs
+        # between seasons (e.g. "Ipswich" 2024-25 vs "Ipswich Town" 2026-27),
+        # so a static alias table can't be right for every season.
+        tid = name_to_id.get(odds_team_to_fpl_name(raw_name))
+        if tid is None:
+            tid = name_to_id.get(raw_name)
+        return tid
+
     rows = []
     for match in gw_matches:
-        home_name = odds_team_to_fpl_name(match["home_team"])
-        away_name = odds_team_to_fpl_name(match["away_team"])
-
-        home_id = name_to_id.get(home_name)
-        away_id = name_to_id.get(away_name)
+        home_id = _lookup(match["home_team"])
+        away_id = _lookup(match["away_team"])
 
         if home_id is None or away_id is None:
-            logger.debug(
-                "Odds: cannot map team names: %s→%s (%s), %s→%s (%s)",
-                match["home_team"], home_name, home_id,
-                match["away_team"], away_name, away_id,
+            logger.warning(
+                "Odds: dropping match, unmapped team name(s): %r (id=%s), %r (id=%s)",
+                match["home_team"], home_id, match["away_team"], away_id,
             )
             continue
 

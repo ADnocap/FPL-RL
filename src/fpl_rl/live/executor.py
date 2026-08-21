@@ -69,14 +69,38 @@ def apply_lineup(
     captain_id: int,
     vice_captain_id: int,
     chip: str | None = None,
+    element_types: dict[int, int] | None = None,
 ) -> None:
-    """POST the starting XI, bench order, captaincy, and optional BB/TC chip."""
+    """POST the starting XI, bench order, captaincy, and optional BB/TC chip.
+
+    The server requires positions 1-11 ordered GK, DEF, MID, FWD and the
+    substitute GK pinned at position 12 (bench outfielders keep their given
+    sub-priority order at 13-15).  *element_types* maps element_id ->
+    element_type (1-4); if omitted it is fetched from bootstrap-static.
+    """
     if chip is not None and chip not in _MYTEAM_CHIPS:
         raise ValueError(
             f"my-team POST only accepts bench_boost/triple_captain, got {chip}"
         )
+    if element_types is None:
+        resp = requests.get(
+            f"{FPL_API_BASE}/bootstrap-static/", headers=auth.headers(), timeout=30
+        )
+        resp.raise_for_status()
+        element_types = {
+            el["id"]: el["element_type"] for el in resp.json()["elements"]
+        }
+
+    xi = sorted(lineup_element_ids, key=lambda eid: element_types[eid])
+    bench_gk = [e for e in bench_element_ids if element_types[e] == 1]
+    bench_out = [e for e in bench_element_ids if element_types[e] != 1]
+    ordered = xi + bench_gk + bench_out
+    if len(ordered) != 15 or len(bench_gk) != 1:
+        raise ValueError(
+            f"Invalid squad shape: {len(xi)} starters, {len(bench_gk)} bench GK"
+        )
     picks = []
-    for pos, eid in enumerate(lineup_element_ids + bench_element_ids, start=1):
+    for pos, eid in enumerate(ordered, start=1):
         picks.append(
             {
                 "element": eid,
