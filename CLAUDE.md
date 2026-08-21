@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install in editable mode with dev dependencies
-pip install -e ".[dev]"          # also: .[prediction] .[optimizer] .[data] .[webapp]
+pip install -e ".[dev]"          # also: .[prediction] .[optimizer] .[data]
 
 # Run all tests (351 as of 2026-08)
 pytest
@@ -76,7 +76,6 @@ reconstructed purchase/selling prices, FT bank simulation, chips),
 **`training/`** — `MultiSeasonFPLEnv`, callbacks, RL training infra (research
 path; the operational path is prediction + MILP).
 
-`webapp/` — FastAPI + React historical-replay visualizer (not live).
 `cluster/` — SLURM scripts for the LaRuche cluster.
 
 ### Key Data Flow (live season)
