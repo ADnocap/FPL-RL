@@ -36,7 +36,10 @@ class PointPredictor:
     Parameters
     ----------
     params : dict | None
-        LightGBM parameters. Defaults to :data:`DEFAULT_PARAMS`.
+        LightGBM parameters, merged over :data:`DEFAULT_PARAMS`. Every
+        default key — including ``objective`` and ``metric`` — can be
+        overridden per instance (e.g. ``{"objective": "tweedie",
+        "tweedie_variance_power": 1.3}``).
     early_stopping_rounds : int
         Early stopping patience.
     """
@@ -59,6 +62,7 @@ class PointPredictor:
         self,
         train_df: pd.DataFrame,
         val_df: pd.DataFrame | None = None,
+        sample_weight: np.ndarray | pd.Series | None = None,
     ) -> dict[str, float]:
         """Train one LightGBM model per position.
 
@@ -68,6 +72,12 @@ class PointPredictor:
             Training data with feature columns, ``position``, and ``target``.
         val_df : pd.DataFrame | None
             Validation data for early stopping. If None, no early stopping.
+        sample_weight : np.ndarray | pd.Series | None
+            Optional per-row training weights, aligned **positionally** with
+            ``train_df`` (not by index). Sliced per position and passed to
+            LightGBM. Validation data stays unweighted so early stopping
+            selects on the unweighted metric. If None (default), behavior is
+            identical to before this parameter existed.
 
         Returns
         -------
@@ -75,6 +85,16 @@ class PointPredictor:
             Per-position training MAE: ``{"GK": 1.5, "DEF": 1.8, ...}``
         """
         import lightgbm as lgb
+
+        if sample_weight is not None and len(sample_weight) != len(train_df):
+            raise ValueError(
+                f"sample_weight length {len(sample_weight)} != "
+                f"train_df length {len(train_df)}"
+            )
+        weight_arr = (
+            None if sample_weight is None
+            else np.asarray(sample_weight, dtype=np.float64)
+        )
 
         # Determine feature columns
         self._feature_names = [
@@ -85,15 +105,17 @@ class PointPredictor:
         results: dict[str, float] = {}
 
         for pos in POSITIONS:
-            pos_train = train_df[train_df["position"] == pos]
+            pos_mask = (train_df["position"] == pos).to_numpy()
+            pos_train = train_df[pos_mask]
             if pos_train.empty:
                 logger.warning("No training data for position %s", pos)
                 continue
 
             X_train = pos_train[self._feature_names]
             y_train = pos_train["target"]
+            pos_weight = weight_arr[pos_mask] if weight_arr is not None else None
 
-            train_set = lgb.Dataset(X_train, label=y_train)
+            train_set = lgb.Dataset(X_train, label=y_train, weight=pos_weight)
 
             callbacks = [lgb.log_evaluation(period=0)]  # suppress output
             valid_sets = [train_set]

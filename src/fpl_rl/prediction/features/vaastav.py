@@ -99,14 +99,22 @@ _NUMERIC_SUM_COLS = [
 _FLOAT_SUM_COLS = ["influence", "creativity", "threat", "ict_index"]
 
 # Columns taken from the last row in a DGW group (known before deadline)
-_LAST_COLS = ["value", "selected"]
+# (team is carried through for the team-share feature, not emitted as output)
+_LAST_COLS = ["value", "selected", "team"]
 
 # All output feature columns (rolling specs + expanding + non-rolling)
 FEATURE_COLUMNS: list[str] = (
     [spec[0] for spec in _ROLLING_SPECS]
     + ["season_avg_pts", "season_total_mins", "games_played",
-       "value", "selected_norm", "value_momentum", "selected_momentum"]
+       "value", "selected_norm", "value_momentum", "selected_momentum",
+       "pts_rolling_5_home", "pts_rolling_5_away", "minutes_share_5",
+       "team_xgi_share_5"]
 )
+
+# was_home normalisation map (raw CSVs mix bools, strings and ints)
+_WAS_HOME_MAP = {
+    True: True, False: False, "True": True, "False": False, 1: True, 0: False,
+}
 
 
 def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
@@ -120,6 +128,8 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
         clean_sheets, bonus, bps, influence, creativity, threat,
         ict_index, value, selected.
         May contain multiple rows per (element, GW) for double gameweeks.
+        Optional columns: ``was_home`` (venue-split form) and ``team``
+        (team xGI share) — the dependent features are NaN when absent.
 
     Returns
     -------
@@ -132,6 +142,10 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
     # Ensure float types for ICT columns (they come as strings in some seasons)
     for col in _FLOAT_SUM_COLS:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    # Keep the per-fixture rows: the venue split needs was_home, which the
+    # DGW aggregation below discards.
+    raw_df = df
 
     # ------------------------------------------------------------------
     # 1. Aggregate DGW rows: sum numeric columns, take last for non-summed
@@ -223,10 +237,130 @@ def compute_vaastav_features(merged_gw: pd.DataFrame) -> pd.DataFrame:
     df["selected_momentum"] = df["selected_norm"] - grouped["selected"].shift(1) / 1e7
 
     # ------------------------------------------------------------------
-    # 5. Select output columns
+    # 5. Minutes share: fraction of available minutes over the last 5 GWs
+    # ------------------------------------------------------------------
+    # rolling-5 SUM of prior minutes / (5 * 90). Unlike mins_rolling_5 (a
+    # mean over observed GWs), this always divides by the full 450, so
+    # early-season values reflect true availability, not per-game averages.
+    df["minutes_share_5"] = shifted_mins.groupby(df["element"]).transform(
+        lambda s: s.rolling(window=5, min_periods=1).sum()
+    ) / 450.0
+
+    # ------------------------------------------------------------------
+    # 6. Venue-split rolling form (last 5 home / last 5 away matches)
+    # ------------------------------------------------------------------
+    df = _add_venue_split_features(df, raw_df)
+
+    # ------------------------------------------------------------------
+    # 7. Team attacking share: player rolling-5 xGI / team rolling-5 xGI
+    # ------------------------------------------------------------------
+    df = _add_team_xgi_share(df)
+
+    # ------------------------------------------------------------------
+    # 8. Select output columns
     # ------------------------------------------------------------------
     output_cols = ["element", "GW"] + FEATURE_COLUMNS
     # Only keep columns that exist (value is guaranteed)
     output_cols = [c for c in output_cols if c in df.columns]
 
     return df[output_cols].copy()
+
+
+def _add_venue_split_features(
+    df: pd.DataFrame, raw_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Add pts_rolling_5_home / pts_rolling_5_away to ``df``.
+
+    Each is the mean of ``total_points`` over the player's last 5 gameweeks
+    at that venue *strictly before* the current GW (a DGW with two fixtures
+    at the same venue counts as one observation with summed points, matching
+    the module's per-GW aggregation). The value is defined at every GW row —
+    e.g. at an away GW, pts_rolling_5_home still reflects the last 5 home
+    matches played so far. NaN until the player has a prior match at that
+    venue.
+
+    ``df`` must be sorted by (element, GW); ``raw_df`` holds the per-fixture
+    rows (before DGW aggregation) carrying ``was_home``.
+    """
+    for venue_flag, out_col in (
+        (True, "pts_rolling_5_home"),
+        (False, "pts_rolling_5_away"),
+    ):
+        if "was_home" not in raw_df.columns:
+            df[out_col] = float("nan")
+            continue
+
+        was_home = raw_df["was_home"].map(_WAS_HOME_MAP)
+        venue_obs = (
+            raw_df.loc[was_home == venue_flag, ["element", "GW", "total_points"]]
+            .groupby(["element", "GW"], as_index=False)["total_points"]
+            .sum()
+            .sort_values(["element", "GW"])
+        )
+
+        if venue_obs.empty:
+            df[out_col] = float("nan")
+            continue
+
+        # Rolling mean over the last 5 venue observations INCLUDING the
+        # current one — the strictly-prior value is recovered below.
+        tmp_col = f"_{out_col}_incl"
+        venue_obs[tmp_col] = venue_obs.groupby("element")["total_points"].transform(
+            lambda s: s.rolling(window=5, min_periods=1).mean()
+        )
+
+        df = df.merge(
+            venue_obs[["element", "GW", tmp_col]], on=["element", "GW"], how="left"
+        )
+        # ffill carries the latest venue rolling value forward across
+        # non-venue GWs; shift(1) then makes it strictly prior to each GW.
+        df[out_col] = df.groupby("element")[tmp_col].transform(
+            lambda s: s.ffill().shift(1)
+        )
+        df = df.drop(columns=[tmp_col])
+
+    return df
+
+
+def _add_team_xgi_share(df: pd.DataFrame) -> pd.DataFrame:
+    """Add team_xgi_share_5: player rolling-5 xGI / team rolling-5 xGI.
+
+    Both numerator and denominator are shifted rolling-5 SUMS of FPL
+    ``expected_goal_involvements`` (player rows vs the per-GW total across
+    all of the team's players), so the share is the fraction of the team's
+    recent attacking output flowing through this player. NaN when the
+    source column is missing (pre-2022-23 seasons), the team is unknown,
+    or there is no prior data.
+    """
+    if "team" not in df.columns or "expected_goal_involvements" not in df.columns:
+        df["team_xgi_share_5"] = float("nan")
+        return df
+
+    # Team per-GW xGI totals, then shifted rolling-5 sum per team
+    team_gw = (
+        df.groupby(["team", "GW"], as_index=False)["expected_goal_involvements"]
+        .sum()
+        .rename(columns={"expected_goal_involvements": "_team_xgi"})
+        .sort_values(["team", "GW"])
+    )
+    team_gw["_team_xgi_roll5"] = team_gw.groupby("team")["_team_xgi"].transform(
+        lambda s: s.shift(1).rolling(window=5, min_periods=1).sum()
+    )
+
+    df = df.merge(
+        team_gw[["team", "GW", "_team_xgi_roll5"]], on=["team", "GW"], how="left"
+    )
+
+    player_roll5 = (
+        df.groupby("element")["expected_goal_involvements"]
+        .shift(1)
+        .groupby(df["element"])
+        .transform(lambda s: s.rolling(window=5, min_periods=1).sum())
+    )
+
+    # Guard against zero/NaN denominators (early season, xGI all zero)
+    denom = df["_team_xgi_roll5"].where(df["_team_xgi_roll5"] > 1e-6)
+    df["team_xgi_share_5"] = player_roll5 / denom
+    df = df.drop(columns=["_team_xgi_roll5"])
+
+    return df

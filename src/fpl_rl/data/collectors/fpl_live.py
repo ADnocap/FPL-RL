@@ -187,11 +187,29 @@ class LiveFPLCollector(BaseCollector):
         (self.snapshot_dir / f"gw{gw}_fixtures.json").write_text(
             json.dumps(fixtures), encoding="utf-8"
         )
+        self._snapshot_set_piece_notes(gw)
         (self.snapshot_dir / f"gw{gw}_meta.json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
         )
         logger.info("Live snapshot: GW%d saved (%s)", gw, ep_field)
         return gw
+
+    def _snapshot_set_piece_notes(self, gw: int) -> None:
+        """Fetch team set-piece notes and save them with the GW snapshot.
+
+        Endpoint shape: ``{"last_updated": ISO-8601, "teams": [{"id": int,
+        "notes": [{"info_message": str, "external_link": bool,
+        "source_link": str}]}]}``.  Non-fatal on failure — the notes are
+        supplementary to the bootstrap/fixtures point-in-time record.
+        """
+        try:
+            notes = self._fetch_json(f"{FPL_API_BASE}/team/set-piece-notes/")
+        except Exception:
+            logger.warning("Live snapshot: set-piece notes fetch failed", exc_info=True)
+            return
+        (self.snapshot_dir / f"gw{gw}_setpiece_notes.json").write_text(
+            json.dumps(notes), encoding="utf-8"
+        )
 
     def _load_snapshot_xp(self) -> dict[tuple[int, int], float]:
         """Build (element_id, gw) -> xP from all pre-deadline snapshots."""

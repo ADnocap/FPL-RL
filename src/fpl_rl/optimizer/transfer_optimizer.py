@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 
 from fpl_rl.engine.state import GameState
+from fpl_rl.optimizer.lineup_selector import (
+    BENCH_GK_WEIGHT,
+    BENCH_OUTFIELD_WEIGHTS,
+    VICE_CAPTAIN_WEIGHT,
+)
 from fpl_rl.optimizer.types import OptimizerResult, PlayerCandidate
 from fpl_rl.utils.constants import (
     MAX_PER_CLUB,
@@ -110,12 +115,26 @@ def optimize_transfers(
     free_hit = chip == "free_hit"
     wildcard = chip == "wildcard"
     free_chip = free_hit or wildcard
+    bench_boost = chip == "bench_boost"
+
+    gk_idx = [i for i, p in enumerate(all_cands) if p.position == Position.GK]
+    outfield_idx = [i for i, p in enumerate(all_cands) if p.position != Position.GK]
+    n_slots = len(BENCH_OUTFIELD_WEIGHTS)
 
     # --- Variables ---
     x = [pulp.LpVariable(f"x_{i}", cat="Binary") for i in range(n)]  # in new squad
     y = [pulp.LpVariable(f"y_{i}", cat="Binary") for i in range(n)]  # in lineup
     c_var = [pulp.LpVariable(f"c_{i}", cat="Binary") for i in range(n)]  # captain
     v_var = [pulp.LpVariable(f"v_{i}", cat="Binary") for i in range(n)]  # vice-captain
+    # b[i, s] = 1 if outfield player i sits in bench slot s (after the GK).
+    # Not needed under Bench Boost: all bench players score in full there.
+    b: dict[tuple[int, int], object] = {}
+    if not bench_boost:
+        b = {
+            (i, s): pulp.LpVariable(f"b_{i}_{s}", cat="Binary")
+            for i in outfield_idx
+            for s in range(n_slots)
+        }
 
     prob = pulp.LpProblem("transfer_optimizer", pulp.LpMaximize)
 
@@ -147,16 +166,29 @@ def optimize_transfers(
             t[k] for k in range(free_transfers, max_possible)
         )
 
-    # Objective: XI points + captain double - hits, with chip-aware terms.
+    # Objective: XI points + captain double + failover/auto-sub EV - hits,
+    # with chip-aware terms.
     objective = (
         pulp.lpSum(xp[i] * y[i] for i in range(n))
         + pulp.lpSum(xp[i] * c_var[i] for i in range(n))
+        + VICE_CAPTAIN_WEIGHT * pulp.lpSum(xp[i] * v_var[i] for i in range(n))
         - hit_expr
     )
-    if chip == "bench_boost":
-        # Bench players score too — value the whole 15, not just the XI
+    if bench_boost:
+        # Bench players score in full — value the whole 15, not just the XI.
+        # This replaces (not stacks with) the weighted auto-sub EV proxies.
         objective += pulp.lpSum(xp[i] * (x[i] - y[i]) for i in range(n))
-    elif chip == "triple_captain":
+    else:
+        # Auto-sub EV: benched GK + slot-weighted benched outfielders
+        objective += BENCH_GK_WEIGHT * pulp.lpSum(
+            xp[i] * (x[i] - y[i]) for i in gk_idx
+        )
+        objective += pulp.lpSum(
+            BENCH_OUTFIELD_WEIGHTS[s] * xp[i] * b[i, s]
+            for i in outfield_idx
+            for s in range(n_slots)
+        )
+    if chip == "triple_captain":
         # Captain counts 3x instead of 2x
         objective += pulp.lpSum(xp[i] * c_var[i] for i in range(n))
     prob += objective
@@ -215,6 +247,14 @@ def optimize_transfers(
     prob += pulp.lpSum(c_var) == 1
     prob += pulp.lpSum(v_var) == 1
 
+    # Bench slot assignment: each benched outfielder fills exactly one slot,
+    # each slot holds exactly one player
+    if not bench_boost:
+        for i in outfield_idx:
+            prob += pulp.lpSum(b[i, s] for s in range(n_slots)) == x[i] - y[i]
+        for s in range(n_slots):
+            prob += pulp.lpSum(b[i, s] for i in outfield_idx) == 1
+
     # --- Solve (use default available solver) ---
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
@@ -247,14 +287,23 @@ def optimize_transfers(
             if pulp.value(v_var[i]) > 0.5:
                 vice_captain_id = eid
 
-    # Bench order: backup GK first, then by predicted points descending
+    # Bench order: backup GK first, then outfield by optimized slot assignment
+    # (under Bench Boost slot order is irrelevant — sort by xP descending)
     bench_gk = [eid for _, pos, eid in bench_candidates if pos == Position.GK]
-    bench_outfield = sorted(
-        [(xp_val, eid) for xp_val, pos, eid in bench_candidates if pos != Position.GK],
-        key=lambda t: t[0],
-        reverse=True,
-    )
-    bench_ids = bench_gk + [eid for _, eid in bench_outfield]
+    if bench_boost:
+        bench_outfield = sorted(
+            [(xp_val, eid) for xp_val, pos, eid in bench_candidates if pos != Position.GK],
+            key=lambda t: t[0],
+            reverse=True,
+        )
+        bench_ids = bench_gk + [eid for _, eid in bench_outfield]
+    else:
+        slot_to_eid: dict[int, int] = {}
+        for i in outfield_idx:
+            for s in range(n_slots):
+                if pulp.value(b[i, s]) > 0.5:
+                    slot_to_eid[s] = all_cands[i].element_id
+        bench_ids = bench_gk + [slot_to_eid[s] for s in range(n_slots)]
 
     # Determine transfers in/out
     new_squad_set = set(new_squad_ids)

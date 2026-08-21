@@ -522,7 +522,183 @@ class TestNewRollingFeatures:
 
 
 # ---------------------------------------------------------------------------
-# 9. Missing-column guard
+# 9. Venue-split rolling form
+# ---------------------------------------------------------------------------
+class TestVenueSplitRolling:
+    """pts_rolling_5_home/away roll over that venue's past matches only."""
+
+    @pytest.fixture()
+    def alternating_venues(self) -> pd.DataFrame:
+        """H(5), A(2), H(8), H(3), A(7) — hand-checkable venue sequences."""
+        return _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 5, "was_home": True},
+                {"GW": 2, "total_points": 2, "was_home": False},
+                {"GW": 3, "total_points": 8, "was_home": True},
+                {"GW": 4, "total_points": 3, "was_home": True},
+                {"GW": 5, "total_points": 7, "was_home": False},
+            ],
+        )
+
+    def test_home_rolling_hand_check(self, alternating_venues: pd.DataFrame) -> None:
+        result = compute_vaastav_features(alternating_venues)
+        home = result.set_index("GW")["pts_rolling_5_home"]
+
+        # GW1: no prior home matches -> NaN
+        assert math.isnan(home[1])
+        # GW2 (away): last home matches = {GW1} -> mean(5) = 5
+        assert home[2] == pytest.approx(5.0)
+        # GW3 (home): prior home = {GW1} -> 5 (GW3 itself excluded)
+        assert home[3] == pytest.approx(5.0)
+        # GW4: prior home = {GW1, GW3} -> mean(5, 8) = 6.5
+        assert home[4] == pytest.approx(6.5)
+        # GW5: prior home = {GW1, GW3, GW4} -> mean(5, 8, 3)
+        assert home[5] == pytest.approx(16 / 3)
+
+    def test_away_rolling_hand_check(self, alternating_venues: pd.DataFrame) -> None:
+        result = compute_vaastav_features(alternating_venues)
+        away = result.set_index("GW")["pts_rolling_5_away"]
+
+        # GW1, GW2: no prior away matches -> NaN
+        assert math.isnan(away[1])
+        assert math.isnan(away[2])
+        # GW3..5: prior away = {GW2} -> 2
+        assert away[3] == pytest.approx(2.0)
+        assert away[4] == pytest.approx(2.0)
+        assert away[5] == pytest.approx(2.0)
+
+    def test_missing_was_home_gives_nan(self) -> None:
+        """Without a was_home column the venue features are NaN but present."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[{"GW": 1, "total_points": 5}, {"GW": 2, "total_points": 3}],
+        )
+        result = compute_vaastav_features(df)
+        assert result["pts_rolling_5_home"].isna().all()
+        assert result["pts_rolling_5_away"].isna().all()
+
+    def test_dgw_same_venue_counts_once(self) -> None:
+        """Two home fixtures in one GW = one observation with summed points."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "total_points": 4, "was_home": True},
+                {"GW": 2, "total_points": 3, "was_home": True},  # DGW fixture 1
+                {"GW": 2, "total_points": 5, "was_home": True},  # DGW fixture 2
+                {"GW": 3, "total_points": 1, "was_home": False},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        home = result.set_index("GW")["pts_rolling_5_home"]
+
+        # GW3: prior home obs = {GW1: 4, GW2: 3+5=8} -> mean = 6
+        assert home[3] == pytest.approx(6.0)
+
+
+# ---------------------------------------------------------------------------
+# 10. Minutes share
+# ---------------------------------------------------------------------------
+class TestMinutesShare:
+    """minutes_share_5 = rolling-5 sum of prior minutes / 450."""
+
+    def test_full_minutes_share(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[{"GW": gw, "minutes": 90} for gw in range(1, 8)],
+        )
+        result = compute_vaastav_features(df)
+        share = result.set_index("GW")["minutes_share_5"]
+
+        # GW1: NaN (no prior data)
+        assert math.isnan(share[1])
+        # GW2: 90 / 450 = 0.2 (denominator is always the full 450)
+        assert share[2] == pytest.approx(0.2)
+        # GW6: prior 5 GWs all 90 -> 450/450 = 1.0
+        assert share[6] == pytest.approx(1.0)
+        assert share[7] == pytest.approx(1.0)
+
+    def test_partial_minutes_share(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "minutes": 90},
+                {"GW": 2, "minutes": 0},
+                {"GW": 3, "minutes": 45},
+                {"GW": 4, "minutes": 90},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        share = result.set_index("GW")["minutes_share_5"]
+
+        # GW4: (90 + 0 + 45) / 450 = 0.3
+        assert share[4] == pytest.approx(0.3)
+
+
+# ---------------------------------------------------------------------------
+# 11. Team xGI share
+# ---------------------------------------------------------------------------
+class TestTeamXgiShare:
+    """team_xgi_share_5 = player rolling-5 xGI sum / team rolling-5 xGI sum."""
+
+    def test_share_hand_check(self) -> None:
+        """Two teammates: shares reflect each player's slice of team xGI."""
+        player_a = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "expected_goal_involvements": 0.6, "team": 1},
+                {"GW": 2, "expected_goal_involvements": 0.4, "team": 1},
+                {"GW": 3, "expected_goal_involvements": 0.0, "team": 1},
+            ],
+        )
+        player_b = _make_player_rows(
+            element=2,
+            gw_data=[
+                {"GW": 1, "expected_goal_involvements": 0.2, "team": 1},
+                {"GW": 2, "expected_goal_involvements": 0.6, "team": 1},
+                {"GW": 3, "expected_goal_involvements": 0.0, "team": 1},
+            ],
+        )
+        combined = pd.concat([player_a, player_b], ignore_index=True)
+        result = compute_vaastav_features(combined)
+        share = result.set_index(["element", "GW"])["team_xgi_share_5"]
+
+        # GW1: no prior data -> NaN
+        assert math.isnan(share[(1, 1)])
+        # GW2: A = 0.6 / (0.6 + 0.2) = 0.75; B = 0.2 / 0.8 = 0.25
+        assert share[(1, 2)] == pytest.approx(0.75)
+        assert share[(2, 2)] == pytest.approx(0.25)
+        # GW3: A = (0.6+0.4) / 1.8; B = (0.2+0.6) / 1.8
+        assert share[(1, 3)] == pytest.approx(1.0 / 1.8)
+        assert share[(2, 3)] == pytest.approx(0.8 / 1.8)
+
+    def test_zero_team_xgi_gives_nan(self) -> None:
+        """A zero denominator must produce NaN, not inf."""
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "expected_goal_involvements": 0.0, "team": 1},
+                {"GW": 2, "expected_goal_involvements": 0.5, "team": 1},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        assert result["team_xgi_share_5"].isna().all()
+
+    def test_missing_team_column_gives_nan(self) -> None:
+        df = _make_player_rows(
+            element=1,
+            gw_data=[
+                {"GW": 1, "expected_goal_involvements": 0.5},
+                {"GW": 2, "expected_goal_involvements": 0.5},
+            ],
+        )
+        result = compute_vaastav_features(df)
+        assert "team_xgi_share_5" in result.columns
+        assert result["team_xgi_share_5"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# 12. Missing-column guard
 # ---------------------------------------------------------------------------
 class TestMissingColumnGuard:
     """When source columns don't exist, output should be NaN."""
