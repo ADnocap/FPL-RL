@@ -16,6 +16,7 @@ from fpl_rl.prediction.features.understat import compute_understat_features
 from fpl_rl.prediction.features.prior_season import compute_prior_season_features
 from fpl_rl.prediction.features.opponent import compute_opponent_features
 from fpl_rl.prediction.features.odds import compute_odds_features
+from fpl_rl.prediction.features.props import compute_props_features
 from fpl_rl.prediction.features.players_raw import compute_players_raw_features
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,12 @@ class FeaturePipeline:
             self.data_dir, season, merged_gw, teams_df,
         )
 
-        # 8. Compute players_raw features (set pieces, xP)
+        # 8. Compute player-prop odds features (anytime scorer, assists, SOT)
+        props_df = compute_props_features(
+            merged_gw, self.data_dir, season, self.id_resolver, teams_df,
+        )
+
+        # 9. Compute players_raw features (set pieces, xP)
         players_raw_df = compute_players_raw_features(
             self.data_dir, season, merged_gw,
         )
@@ -232,6 +238,10 @@ class FeaturePipeline:
         # Add odds features (on element, GW)
         if not odds_df.empty:
             result = result.merge(odds_df, on=["element", "GW"], how="left")
+
+        # Add player-prop features (on element, GW)
+        if not props_df.empty:
+            result = result.merge(props_df, on=["element", "GW"], how="left")
 
         # Add players_raw features (on element, GW)
         if not players_raw_df.empty:
