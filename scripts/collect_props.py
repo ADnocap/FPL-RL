@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASE = "https://api.the-odds-api.com/v4/historical/sports/soccer_epl"
+LIVE_BASE = "https://api.the-odds-api.com/v4/sports/soccer_epl"
 
 DEFAULT_MARKETS = (
     "player_goal_scorer_anytime,player_shots_on_target,"
@@ -49,13 +50,96 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def collect_live_props(
+    season: str,
+    gw: int,
+    data_dir: Path,
+    markets: str = DEFAULT_MARKETS,
+    regions: str = "us",
+) -> int:
+    """Snapshot CURRENT player-prop odds for the upcoming GW's fixtures.
+
+    Uses the live (non-historical) endpoints — no 10x credit multiplier, so a
+    10-match GW costs ~40 credits. Records are written in the same shape as
+    the historical backfill so features/props.py reads both identically.
+    Returns the number of events saved. Raises on auth/network errors —
+    callers on the live path should treat failures as non-fatal.
+    """
+    _load_env()
+    key = os.environ.get("ODDS_API_KEY", "")
+    if not key:
+        raise RuntimeError("ODDS_API_KEY missing from .env")
+
+    fixtures = pd.read_csv(data_dir / "raw" / season / "fixtures.csv")
+    gw_fx = fixtures[fixtures["event"] == gw].dropna(subset=["kickoff_time"])
+    if gw_fx.empty:
+        return 0
+    kickoffs = pd.to_datetime(gw_fx["kickoff_time"], utc=True)
+    gw_start = kickoffs.min() - pd.Timedelta(hours=3)
+    gw_end = kickoffs.max() + pd.Timedelta(hours=3)
+
+    out_dir = data_dir / "props" / season
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    resp = requests.get(
+        f"{LIVE_BASE}/events", params={"apiKey": key}, timeout=30
+    )
+    resp.raise_for_status()
+    events = [
+        e for e in resp.json()
+        if gw_start <= pd.Timestamp(e["commence_time"]) <= gw_end
+    ]
+
+    saved = 0
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for e in events:
+        dest = out_dir / f"gw{gw}_{e['id']}.json"
+        odds_resp = requests.get(
+            f"{LIVE_BASE}/events/{e['id']}/odds",
+            params={
+                "apiKey": key,
+                "regions": regions,
+                "markets": markets,
+                "oddsFormat": "decimal",
+            },
+            timeout=30,
+        )
+        if odds_resp.status_code == 404:
+            continue
+        odds_resp.raise_for_status()
+        # Wrap to match the historical record shape ({"odds": {"data": ...}})
+        record = {
+            "gw": gw,
+            "event": e,
+            "snapshot_requested": now_iso,
+            "odds": {"data": odds_resp.json()},
+        }
+        dest.write_text(json.dumps(record, indent=1), encoding="utf-8")
+        saved += 1
+        time.sleep(0.6)
+    remaining = odds_resp.headers.get("x-requests-remaining") if events else "?"
+    print(f"Live props GW{gw}: {saved} events saved "
+          f"(credits remaining ~{remaining})")
+    return saved
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--season", default="2025-26")
     parser.add_argument("--markets", default=DEFAULT_MARKETS)
     parser.add_argument("--regions", default="us")
     parser.add_argument("--data-dir", type=Path, default=REPO_ROOT / "data")
+    parser.add_argument("--live", type=int, metavar="GW", default=None,
+                        help="snapshot CURRENT odds for this upcoming GW "
+                             "instead of the historical backfill")
     args = parser.parse_args()
+
+    if args.live is not None:
+        collect_live_props(
+            args.season, args.live, args.data_dir,
+            markets=args.markets, regions=args.regions,
+        )
+        return
 
     _load_env()
     key = os.environ.get("ODDS_API_KEY", "")

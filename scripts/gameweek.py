@@ -137,6 +137,14 @@ def main() -> None:
         collector.build_season_files(
             bootstrap=bootstrap, fixtures=fixtures, include_upcoming=True
         )
+        # Live player-prop odds (feeds props_* features; optional — needs
+        # ODDS_API_KEY with prop-market access; ~40 credits per GW)
+        try:
+            from collect_props import collect_live_props
+
+            collect_live_props(args.season, gw, args.data_dir)
+        except Exception as exc:
+            print(f"(props snapshot skipped: {exc})")
 
     # 2. Predictions
     # FPL's EP already embeds chance_of_playing (EP_FORMULA.md), so the pool
